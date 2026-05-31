@@ -1,0 +1,145 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-appbg text-white font-sans antialiased overflow-hidden;
+    font-family: 'Outfit', sans-serif;
+  }
+}
+
+.neumorphic-card {
+  @apply bg-cardbg rounded-[2rem] shadow-soft border border-white/[0.03] transition-all;
+}
+
+.neumorphic-panel {
+  @apply bg-gradient-to-br from-cardbg to-cardbgLight rounded-3xl shadow-soft border border-white/[0.05];
+}
+
+.primary-btn {
+  @apply bg-gradient-accent text-white px-8 py-4 rounded-2xl font-bold transition-all shadow-glow hover:scale-[1.03] active:scale-95 flex items-center justify-center gap-2;
+}
+
+.secondary-btn {
+  @apply bg-[#262B3D] text-[#8F9BB3] px-6 py-4 rounded-2xl font-semibold transition-all hover:text-white hover:bg-[#2D3349] flex items-center justify-center gap-2;
+}
+
+.tertiary-btn {
+  @apply bg-[#1D2130] text-[#8F9BB3] p-4 rounded-3xl transition-all hover:text-white hover:bg-[#202534] flex items-center justify-center;
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3);
+}
+
+.input-style {
+  @apply bg-[#141620] border-none rounded-2xl px-5 py-4 outline-none w-full text-white placeholder:text-textSoft transition-all;
+  box-shadow: inset 4px 4px 8px #08090d, inset -4px -4px 8px #202333;
+}
+
+select.input-style {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='white' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 1.25rem center;
+  background-size: 1rem;
+  padding-right: 3rem;
+}
+
+.input-style:focus {
+  box-shadow: inset 6px 6px 10px #08090d, inset -6px -6px 10px #202333, 0 0 0 2px rgba(0, 210, 255, 0.4);
+}
+
+/* Base custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-white/10 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-accentEnd/50;
+}
+
+/* Background diagonal accent like the image */
+.bg-diagonal {
+  position: absolute;
+  top: -10%;
+  bottom: -10%;
+  right: -20%;
+  width: 70vw;
+  background: linear-gradient(135deg, #0055FF 0%, #00D2FF 100%);
+  transform: skewX(-15deg);
+  opacity: 0.15;
+  z-index: 0;
+  pointer-events: none;
+  filter: blur(100px);
+}
+
+/* Pixel Progress Bar */
+.pixel-progress-center {
+  width: 100%;
+  height: 20px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 2px solid rgba(255, 255, 255, 0.8);
+  border-radius: 8px;
+  box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.8), 0 0 10px rgba(116, 178, 21, 0.3);
+  overflow: hidden;
+  position: relative;
+}
+
+.pixel-progress-main {
+  height: 20px;
+  background: #92C81A;
+  float: left;
+  transition: width 0.3s linear;
+  box-shadow: 0 0 10px #92C81A, inset 0 0 5px rgba(255, 255, 255, 0.5);
+}
+
+.pixel-progress-row {
+  height: 5px;
+  float: left;
+  display: block;
+}
+
+.pixel-progress-sq {
+  height: 5px;
+  width: 5px;
+  float: left;
+  box-shadow: inset 0 0 2px rgba(0, 0, 0, 0.3);
+}
+
+.pixel-sq-2 {
+  background: #4A672F;
+}
+
+.pixel-sq-3 {
+  background: transparent;
+}
+
+.pixel-sq-6 {
+  background: #2C341C;
+}
+
+.pixel-sq-1,
+.pixel-sq-5,
+.pixel-sq-9 {
+  background: #74B215;
+}
+
+.pixel-sq-4,
+.pixel-sq-8,
+.pixel-sq-12 {
+  background: #7BC415;
+}
+
+.pixel-sq-7,
+.pixel-sq-10,
+.pixel-sq-11 {
+  background: #92C81A;
+}

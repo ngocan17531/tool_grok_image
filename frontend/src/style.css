@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    body {
+        @apply bg-slate-950 text-slate-100 font-sans antialiased overflow-hidden;
+    }
+}
+
+.glass-card {
+    @apply bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl;
+}
+
+.primary-button {
+    @apply bg-gradient-to-r from-indigo-500 to-purple-600 hover:opacity-90 px-6 py-2 rounded-xl font-bold transition-all shadow-lg shadow-indigo-500/20;
+}
+
+.input-field {
+    @apply bg-slate-900/50 border border-white/10 rounded-xl px-4 py-2 focus:ring-2 focus:ring-indigo-500 outline-none transition-all;
+}
+
+::-webkit-scrollbar {
+    width: 6px;
+}
+
+::-webkit-scrollbar-track {
+    @apply bg-transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    @apply bg-white/10 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    @apply bg-white/20;
+}

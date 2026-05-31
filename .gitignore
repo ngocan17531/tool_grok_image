@@ -1,0 +1,23 @@
+# Wails
+build/bin
+bin/
+frontend/dist
+frontend/node_modules
+wailsjs/
+
+# Project specific
+session.yaml
+output/
+grok_profile/
+test.txt
+*.exe
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+vendor/
+*.test
+*.out
