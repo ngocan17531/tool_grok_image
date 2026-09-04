@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "BulkAI Google Flow Bridge",
+  "version": "1.0.0",
+  "description": "Kết nối BulkAI app với Google Flow để tự động tạo ảnh",
+  "permissions": ["activeTab"],
+  "host_permissions": ["https://labs.google/*", "https://flow.google.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://labs.google/*", "https://flow.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -9,6 +9,7 @@ wailsjs/
 session.yaml
 output/
 grok_profile/
+googleflow_profile/
 test.txt
 *.exe
 *.log

@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
-import { GenerateImages, FetchSession, CheckSession, Logout, GetAlbumData, GetGalleryFolders, GetGalleryImages, GetImageFullBase64, DeleteImage, ExportGalleryReport, SelectDirectory, UpscaleImage, UpscaleFolder, CheckUpdate, ApplyUpdate, StartGrokChrome, StopGrokChrome, GetGrokChromeStatus, GenerateGrokImages } from "../wailsjs/go/main/App";
-import { EventsOn, EventsOff } from "../wailsjs/runtime/runtime";
-import { LayoutDashboard, Settings, Image as ImageIcon, Zap, Terminal, ChevronRight, ChevronLeft, CheckCircle2, Play, UserCircle, Trash2, FolderPlus, CheckSquare, Square, X, ExternalLink, Copy, FileSpreadsheet, Folder, Sparkles, Maximize } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { GenerateImages, FetchSession, CheckSession, Logout, GetAlbumData, GetGalleryFolders, GetGalleryImages, GetGalleryImageList, GetImageFullBase64, DeleteImage, ExportGalleryReport, ExportCSV, DeleteAlbum, SelectDirectory, UpscaleImage, UpscaleFolder, CheckUpdate, ApplyUpdate, StartGrokChrome, StopGrokChrome, GetGrokChromeStatus, GenerateGrokImages, StartGoogleFlowChrome, StopGoogleFlowChrome, GetGoogleFlowChromeStatus, GenerateGoogleFlowImages, StopGoogleFlowGeneration, StartBridge, StopBridge, GetBridgeStatus, SendBridgePrompt, GetAlbumTitles, ExportGalleryReportWithKeywords, ExportCSVWithKeywords, FixExcelTitles, FixAlbumData } from "../wailsjs/go/main/App";
+import { EventsOn, EventsOff, BrowserOpenURL } from "../wailsjs/runtime/runtime";
+import { LayoutDashboard, Settings, Image as ImageIcon, Zap, Terminal, ChevronRight, ChevronLeft, ChevronDown, CheckCircle2, Play, UserCircle, Trash2, FolderPlus, CheckSquare, Square, X, ExternalLink, Copy, FileSpreadsheet, Folder, Sparkles, Maximize, Download, FileText, MousePointerClick } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import './App.css';
 import logo from './assets/logo.svg';
@@ -33,10 +33,36 @@ function App() {
             // Grok-specific
             grokRatio: '1:1',
             grokCount: 2,
-            grokSuffix: ''
+            grokSuffix: '',
+            // Google Flow
+            googleFlowUrl: 'https://flow.google.com/project',
+            googleFlowDelay: 10
         };
     });
     const [promptText, setPromptText] = useState(() => localStorage.getItem('bulkai_prompts') || '');
+
+    // Banned words: [{banned: string, replacement: string}]
+    const [bannedWords, setBannedWords] = useState(() => {
+        const saved = localStorage.getItem('bulkai_banned_words');
+        if (saved) { try { return JSON.parse(saved); } catch(e) {} }
+        return [];
+    });
+    useEffect(() => {
+        localStorage.setItem('bulkai_banned_words', JSON.stringify(bannedWords));
+    }, [bannedWords]);
+
+    // Replace banned words in a prompt string
+    const replaceBannedWords = (text) => {
+        if (!bannedWords || bannedWords.length === 0) return text;
+        let result = text;
+        for (const entry of bannedWords) {
+            if (entry.banned && entry.banned.trim()) {
+                const regex = new RegExp(entry.banned.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+                result = result.replace(regex, entry.replacement || '');
+            }
+        }
+        return result;
+    };
     const [status, setStatus] = useState({ percentage: 0, estimated: '0m' });
     const [isGenerating, setIsGenerating] = useState(false);
     const [logs, setLogs] = useState([]);
@@ -48,6 +74,10 @@ function App() {
     // Grok Chrome states
     const [grokChromeStatus, setGrokChromeStatus] = useState('stopped');
     const [isTogglingChrome, setIsTogglingChrome] = useState(false);
+
+    // Google Flow Chrome states
+    const [googleFlowChromeStatus, setGoogleFlowChromeStatus] = useState('stopped');
+    const [isTogglingGFlowChrome, setIsTogglingGFlowChrome] = useState(false);
 
     // Auto Update states
     const [updateInfo, setUpdateInfo] = useState(null);
@@ -66,7 +96,16 @@ function App() {
     const [categorySearch, setCategorySearch] = useState("");
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const [promptMode, setPromptMode] = useState('idea'); // 'idea' or 'prompt'
+    const [aiSource, setAiSource] = useState('api'); // 'api' or 'addon'
+    const [bridgeRunning, setBridgeRunning] = useState(false); // Bridge status
+    const [extensionConnected, setExtensionConnected] = useState(false); // Extension status
+    const [bridgeWaiting, setBridgeWaiting] = useState(false); // Bridge đang chờ extension kết nối
+    const bridgeWaitingTimeoutRef = useRef(null); // Timeout auto-stop bridge
+    // Global map lưu pending bridge callbacks theo requestId (fix race condition EventsOn)
+    const bridgePendingRef = useRef({}); // { [requestId]: { resolve, reject, timeoutId } }
     const [promptDynamic, setPromptDynamic] = useState("");
+
+
     const [activeIdeaId, setActiveIdeaId] = useState(null);
     const [activeOriginalKeyword, setActiveOriginalKeyword] = useState("");
 
@@ -80,6 +119,7 @@ function App() {
     const [selectedIdeaForModal, setSelectedIdeaForModal] = useState(null);
     const [isLoadingModalPrompts, setIsLoadingModalPrompts] = useState(false);
     const [selectedModalPromptIds, setSelectedModalPromptIds] = useState([]);
+    const [promptSortStatus, setPromptSortStatus] = useState('default'); // 'default' | 'unused_first' | 'used_first'
     const [selectedManageIdeaIds, setSelectedManageIdeaIds] = useState([]); // Cho bảng Quản lý Ý tưởng
     const [ideaPage, setIdeaPage] = useState(1);
     const itemsPerPage = 10;
@@ -87,7 +127,13 @@ function App() {
     // Gallery States
     const [galleryFolders, setGalleryFolders] = useState([]);
     const [selectedGalleryFolder, setSelectedGalleryFolder] = useState(null);
-    const [galleryImages, setGalleryImages] = useState([]);
+    const [galleryImages, setGalleryImages] = useState([]); // loaded images with base64
+    const [galleryImageNames, setGalleryImageNames] = useState([]); // all image names (lightweight, no base64)
+    const [galleryPage, setGalleryPage] = useState(1);
+    const [galleryTotal, setGalleryTotal] = useState(0);
+    const [galleryTotalPages, setGalleryTotalPages] = useState(0);
+    const [isLoadingGallery, setIsLoadingGallery] = useState(false);
+    const GALLERY_PAGE_SIZE = 30;
     const [previewImage, setPreviewImage] = useState(null); // { name, base64 }
     const [currentPreviewIndex, setCurrentPreviewIndex] = useState(-1);
     const [isLoadingFullImage, setIsLoadingFullImage] = useState(false);
@@ -95,6 +141,9 @@ function App() {
     const [isSelectingDir, setIsSelectingDir] = useState(false);
     const [isUpscaling, setIsUpscaling] = useState(false);
     const [upscaleProgress, setUpscaleProgress] = useState(null); // { current, total, file }
+    const [showExportMenu, setShowExportMenu] = useState(false);
+    const [isSelectingImages, setIsSelectingImages] = useState(false);
+    const [selectedImageNames, setSelectedImageNames] = useState([]);
 
     useEffect(() => {
         const handleProgress = (data) => {
@@ -132,22 +181,52 @@ function App() {
     const handleSelectFolder = async (folderName) => {
         setSelectedGalleryFolder(folderName);
         setCurrentPreviewIndex(-1);
+        setGalleryImages([]);
+        setGalleryPage(1);
+        setIsLoadingGallery(true);
         try {
-            const images = await GetGalleryImages(config.output, folderName);
-            setGalleryImages(images || []);
+            // Load lightweight image names list (fast, no disk read of file contents)
+            const namesList = await GetGalleryImageList(config.output, folderName);
+            setGalleryImageNames(namesList || []);
+            setGalleryTotal(namesList?.length || 0);
+            setGalleryTotalPages(Math.ceil((namesList?.length || 0) / GALLERY_PAGE_SIZE));
+
+            // Load only the first page of thumbnails
+            const result = await GetGalleryImages(config.output, folderName, 1, GALLERY_PAGE_SIZE);
+            setGalleryImages(result.images || []);
         } catch (e) {
             console.error("Lỗi khi tải ảnh Gallery:", e);
+        } finally {
+            setIsLoadingGallery(false);
+        }
+    };
+
+    const handleLoadMoreGallery = async () => {
+        if (isLoadingGallery || galleryPage >= galleryTotalPages) return;
+        const nextPage = galleryPage + 1;
+        setIsLoadingGallery(true);
+        try {
+            const result = await GetGalleryImages(config.output, selectedGalleryFolder, nextPage, GALLERY_PAGE_SIZE);
+            if (result.images && result.images.length > 0) {
+                setGalleryImages(prev => [...prev, ...result.images]);
+                setGalleryPage(nextPage);
+            }
+        } catch (e) {
+            console.error("Lỗi khi tải thêm ảnh:", e);
+        } finally {
+            setIsLoadingGallery(false);
         }
     };
 
     const handleNavigateImage = async (direction) => {
-        if (!galleryImages || galleryImages.length === 0 || currentPreviewIndex === -1) return;
+        // Navigate using the full image names list (not just loaded thumbnails)
+        if (!galleryImageNames || galleryImageNames.length === 0 || currentPreviewIndex === -1) return;
 
         let newIndex = currentPreviewIndex + direction;
-        if (newIndex < 0) newIndex = galleryImages.length - 1;
-        if (newIndex >= galleryImages.length) newIndex = 0;
+        if (newIndex < 0) newIndex = galleryImageNames.length - 1;
+        if (newIndex >= galleryImageNames.length) newIndex = 0;
 
-        const nextImg = galleryImages[newIndex];
+        const nextImg = galleryImageNames[newIndex];
         setIsLoadingFullImage(true);
         try {
             const fullB64 = await GetImageFullBase64(config.output, selectedGalleryFolder, nextImg.name);
@@ -165,21 +244,27 @@ function App() {
     const handleDeleteImage = async () => {
         if (!previewImage || currentPreviewIndex === -1) return;
 
-        const imgToDelete = galleryImages[currentPreviewIndex];
+        // Use galleryImageNames (full list) for tracking position
+        const imgToDelete = galleryImageNames[currentPreviewIndex];
+        if (!imgToDelete) return;
         if (confirm(`Bạn có chắc muốn xóa ảnh này?`)) {
             try {
                 const res = await DeleteImage(config.output, selectedGalleryFolder, imgToDelete.name);
                 if (res === "Success") {
-                    const newGallery = galleryImages.filter((_, idx) => idx !== currentPreviewIndex);
-                    setGalleryImages(newGallery);
+                    // Update both lists
+                    const newNames = galleryImageNames.filter((_, idx) => idx !== currentPreviewIndex);
+                    setGalleryImageNames(newNames);
+                    setGalleryTotal(newNames.length);
+                    // Also remove from loaded images if present
+                    setGalleryImages(prev => prev.filter(img => img.name !== imgToDelete.name));
 
-                    if (newGallery.length === 0) {
+                    if (newNames.length === 0) {
                         setPreviewImage(null);
                         setCurrentPreviewIndex(-1);
                     } else {
                         // Move to next image or previous if at end
-                        const nextIdx = currentPreviewIndex >= newGallery.length ? newGallery.length - 1 : currentPreviewIndex;
-                        const nextImg = newGallery[nextIdx];
+                        const nextIdx = currentPreviewIndex >= newNames.length ? newNames.length - 1 : currentPreviewIndex;
+                        const nextImg = newNames[nextIdx];
                         const fullB64 = await GetImageFullBase64(config.output, selectedGalleryFolder, nextImg.name);
                         setPreviewImage({ name: nextImg.name, base64: fullB64 });
                         setCurrentPreviewIndex(nextIdx);
@@ -210,7 +295,7 @@ function App() {
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [previewImage, currentPreviewIndex, galleryImages, selectedGalleryFolder]);
+    }, [previewImage, currentPreviewIndex, galleryImageNames, selectedGalleryFolder]);
 
     useEffect(() => {
         if (supabase) {
@@ -222,6 +307,8 @@ function App() {
     useEffect(() => {
         setIdeaPage(1);
     }, [ideaSearch, ideaFilterCategory]);
+
+
 
     const fetchIdeas = async () => {
         if (!supabase) return;
@@ -349,6 +436,224 @@ function App() {
             }
         } catch (e) {
             addLog(`Lỗi ngoại lệ khi xuất Excel: ${e.message}`, 'error');
+            alert("Lỗi: " + e.message);
+        } finally {
+            setIsExportingExcel(false);
+        }
+    };
+
+    // Helper: strip HTML tags để lấy plain text từ ChatGPT response (trả về HTML)
+    const stripHtml = (html) => {
+        if (!html) return "";
+        // Replace block elements with newlines first
+        let text = html
+            .replace(/<br\s*\/?>/gi, '\n')
+            .replace(/<\/?(p|div|li|tr|h[1-6])[^>]*>/gi, '\n');
+        // Remove all remaining HTML tags
+        text = text.replace(/<[^>]+>/g, '');
+        // Decode HTML entities
+        text = text.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&#39;/g, "'").replace(/&quot;/g, '"');
+        return text;
+    };
+
+    // Hàm helper: tạo keywords cho 1 title qua addon (Bridge/ChatGPT)
+    const generateKeywordsViaBridge = async (title) => {
+        const keywordPrompt = `Act as a professional stock photographer's assistant.
+Title: "${title}"
+Task: Generate exactly 40 descriptive English keywords.
+Rules:
+1. Keywords must be single words.
+2. Separate keywords with commas.
+3. Only list keywords.`;
+
+        const requestId = "kw_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8);
+
+        return new Promise((resolve, reject) => {
+            const timeoutId = setTimeout(() => {
+                delete bridgePendingRef.current[requestId];
+                reject(new Error("Quá thời gian chờ (2 phút)"));
+            }, 120000);
+
+            // Đăng ký callback vào global pending map (không dùng EventsOn để tránh ghi đè)
+            bridgePendingRef.current[requestId] = {
+                resolve: (data) => {
+                    clearTimeout(timeoutId);
+                    delete bridgePendingRef.current[requestId];
+                    // Strip HTML tags trước (ChatGPT Bridge trả về HTML)
+                    const plainText = stripHtml(data.content || "");
+                    // Parse keywords: split by comma, clean up, allow multi-word, max 40
+                    const words = plainText.split(',')
+                        .map(w => w.trim().replace(/^[\d.\-\*\s]+/, '').replace(/[.!?]$/g, '').trim())
+                        .filter(w => w.length > 0 && w.length < 50)
+                        .slice(0, 40);
+                    resolve(words.join(', '));
+                },
+                reject: (err) => {
+                    clearTimeout(timeoutId);
+                    delete bridgePendingRef.current[requestId];
+                    reject(err);
+                }
+            };
+
+            SendBridgePrompt(requestId, keywordPrompt).then(res => {
+                if (res !== "ok") {
+                    clearTimeout(timeoutId);
+                    delete bridgePendingRef.current[requestId];
+                    reject(new Error(res));
+                }
+            }).catch(err => {
+                clearTimeout(timeoutId);
+                delete bridgePendingRef.current[requestId];
+                reject(err);
+            });
+        });
+    };
+
+    // Hàm helper: tạo keywords cho 1 title qua Gemini API
+    const generateKeywordsViaGemini = async (title) => {
+        const keywordPrompt = `Act as a professional stock photographer's assistant.
+Title: "${title}"
+Task: Generate exactly 40 descriptive English keywords.
+Rules:
+1. Keywords must be single words.
+2. Separate keywords with commas.
+3. Only list keywords.`;
+
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${config.geminiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [{ parts: [{ text: keywordPrompt }] }]
+            })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error.message);
+        if (data.candidates && data.candidates[0].content) {
+            const text = data.candidates[0].content.parts[0].text;
+            const words = text.split(',')
+                .map(w => w.trim().replace(/[.!]/g, ''))
+                .filter(w => w && !w.includes(' '))
+                .slice(0, 40);
+            return words.join(', ');
+        }
+        return "";
+    };
+
+    // Xuất báo cáo (Excel hoặc CSV) với keyword qua Addon hoặc API
+    const handleExportWithKeywords = async (format, source) => {
+        if (!selectedGalleryFolder) return;
+
+        // Kiểm tra điều kiện theo nguồn AI
+        if (source === 'api') {
+            if (!config.geminiKey) {
+                alert("Vui lòng cấu hình Gemini API Key trong thẻ Cài Đặt!");
+                setActiveTab('settings');
+                return;
+            }
+        } else if (source === 'addon') {
+            if (!bridgeRunning || !extensionConnected) {
+                alert("Vui lòng Bật Bridge và kết nối Chrome Extension trước!");
+                return;
+            }
+        }
+
+        setIsExportingExcel(true);
+        setShowExportMenu(false);
+        const formatLabel = format === 'excel' ? 'Excel' : 'CSV';
+        const sourceLabel = source === 'api' ? 'Gemini API' : 'Addon (ChatGPT)';
+        addLog(`Đang xuất ${formatLabel} (${sourceLabel}) cho album: ${selectedGalleryFolder}...`, 'info');
+
+        try {
+            // Nếu dùng API và xuất Excel → dùng hàm cũ (backend xử lý keyword)
+            if (source === 'api' && format === 'excel') {
+                const res = await ExportGalleryReport(config.output, selectedGalleryFolder, config.prefix, config.geminiKey);
+                if (res.startsWith("Success:")) {
+                    const filePath = res.split(': ')[1];
+                    addLog(`Đã xuất ${formatLabel} thành công: ${filePath}`, 'success');
+                    alert(`Đã xuất file thành công!\nĐường dẫn: ${filePath}`);
+                } else {
+                    addLog(`Lỗi xuất ${formatLabel}: ${res}`, 'error');
+                    alert("Lỗi: " + res);
+                }
+                return;
+            }
+
+            // Nếu dùng API và xuất CSV không cần keywords → dùng hàm cũ
+            if (source === 'api' && format === 'csv') {
+                // Lấy titles, tạo keywords qua Gemini, rồi xuất CSV có keywords
+                const titles = await GetAlbumTitles(config.output, selectedGalleryFolder, config.prefix);
+                if (!titles || titles.length === 0) {
+                    addLog("Không tìm thấy title nào trong album.", 'error');
+                    alert("Lỗi: Không tìm thấy dữ liệu ảnh trong album.");
+                    return;
+                }
+
+                addLog(`Đang tạo keywords cho ${titles.length} title qua Gemini API...`, 'info');
+                const keywordsMap = {};
+                for (let i = 0; i < titles.length; i++) {
+                    const t = titles[i];
+                    addLog(`[${i + 1}/${titles.length}] Đang tạo keywords: ${t.title.substring(0, 50)}...`, 'info');
+                    try {
+                        keywordsMap[t.title] = await generateKeywordsViaGemini(t.title);
+                    } catch (e) {
+                        addLog(`Lỗi tạo keywords cho "${t.title}": ${e.message}`, 'error');
+                        keywordsMap[t.title] = "";
+                    }
+                }
+
+                const res = await ExportCSVWithKeywords(config.output, selectedGalleryFolder, config.prefix, keywordsMap);
+                if (res.startsWith("Success:")) {
+                    const filePath = res.split(': ')[1];
+                    addLog(`Đã xuất CSV thành công: ${filePath}`, 'success');
+                    alert(`Đã xuất CSV thành công!\nĐường dẫn: ${filePath}`);
+                } else {
+                    addLog(`Lỗi xuất CSV: ${res}`, 'error');
+                    alert("Lỗi: " + res);
+                }
+                return;
+            }
+
+            // Addon mode: Lấy danh sách titles → tạo keywords qua Bridge → ghi file
+            const titles = await GetAlbumTitles(config.output, selectedGalleryFolder, config.prefix);
+            if (!titles || titles.length === 0) {
+                addLog("Không tìm thấy title nào trong album.", 'error');
+                alert("Lỗi: Không tìm thấy dữ liệu ảnh trong album.");
+                return;
+            }
+
+            addLog(`Đang tạo keywords cho ${titles.length} title qua Addon...`, 'info');
+            const keywordsMap = {};
+
+            for (let i = 0; i < titles.length; i++) {
+                const t = titles[i];
+                addLog(`[${i + 1}/${titles.length}] Đang tạo keywords: ${t.title.substring(0, 50)}...`, 'info');
+                try {
+                    keywordsMap[t.title] = await generateKeywordsViaBridge(t.title);
+                    addLog(`  ✓ Đã tạo keywords cho: ${t.title.substring(0, 50)}`, 'success');
+                } catch (e) {
+                    addLog(`  ✗ Lỗi tạo keywords cho "${t.title}": ${e.message}`, 'error');
+                    keywordsMap[t.title] = "";
+                }
+            }
+
+            // Gọi backend để ghi file
+            let res;
+            if (format === 'excel') {
+                res = await ExportGalleryReportWithKeywords(config.output, selectedGalleryFolder, config.prefix, keywordsMap);
+            } else {
+                res = await ExportCSVWithKeywords(config.output, selectedGalleryFolder, config.prefix, keywordsMap);
+            }
+
+            if (res.startsWith("Success:")) {
+                const filePath = res.split(': ')[1];
+                addLog(`Đã xuất ${formatLabel} thành công: ${filePath}`, 'success');
+                alert(`Đã xuất file thành công!\nĐường dẫn: ${filePath}`);
+            } else {
+                addLog(`Lỗi xuất ${formatLabel}: ${res}`, 'error');
+                alert("Lỗi: " + res);
+            }
+        } catch (e) {
+            addLog(`Lỗi ngoại lệ khi xuất ${formatLabel}: ${e.message}`, 'error');
             alert("Lỗi: " + e.message);
         } finally {
             setIsExportingExcel(false);
@@ -496,7 +801,16 @@ function App() {
     useEffect(() => {
         GetGrokChromeStatus().then(status => {
             setGrokChromeStatus(status || 'stopped');
-        }).catch(() => {});
+        }).catch(() => { });
+        GetGoogleFlowChromeStatus().then(status => {
+            setGoogleFlowChromeStatus(status || 'stopped');
+        }).catch(() => { });
+        GetBridgeStatus().then(status => {
+            if (status) {
+                setBridgeRunning(status.running);
+                setExtensionConnected(status.connected);
+            }
+        }).catch(() => { });
     }, []);
 
     useEffect(() => {
@@ -525,45 +839,133 @@ function App() {
             addLog(data.msg, data.type || 'info');
         });
 
+        // Google Flow Chrome status event
+        EventsOn("gflow_chrome_status", (status) => {
+            setGoogleFlowChromeStatus(status);
+        });
+
+        // Google Flow log events
+        EventsOn("gflow_log", (data) => {
+            addLog(data.msg, data.type || 'info');
+        });
+
         EventsOn("generation_finished", async (albumID) => {
             addLog('Đã tạo ảnh xong', 'success');
             setIsGenerating(false);
             setStatus({ percentage: 100, estimated: '0m' });
 
-            if (albumID && albumID !== "Success" && supabase) {
+            // Đọc config mới nhất từ localStorage (tránh stale closure)
+            let currentConfig = config;
+            try {
+                const savedConfig = localStorage.getItem('bulkai_config');
+                if (savedConfig) currentConfig = JSON.parse(savedConfig);
+            } catch (e) { }
+
+            const currentSupabase = currentConfig.supabaseUrl && currentConfig.supabaseKey
+                ? createClient(currentConfig.supabaseUrl, currentConfig.supabaseKey)
+                : null;
+
+            if (albumID && albumID !== "Success" && currentSupabase) {
                 try {
-                    const dataStr = await GetAlbumData(config.output, albumID);
+                    const dataStr = await GetAlbumData(currentConfig.output, albumID);
                     if (dataStr) {
                         const data = JSON.parse(dataStr);
+                        addLog(`[Debug] Album data: ${data.prompts?.length || 0} prompts, ${data.finished?.length || 0} finished`, 'info');
                         if (data.finished && data.finished.length > 0 && data.prompts) {
                             const finishedPromptsText = data.finished.map(i => {
                                 let p = data.prompts[i] || "";
-                                if (config.prefix && p.startsWith(config.prefix)) {
-                                    p = p.substring(config.prefix.length);
+                                // Strip prefix
+                                if (currentConfig.prefix && p.startsWith(currentConfig.prefix)) {
+                                    p = p.substring(currentConfig.prefix.length);
                                 }
-                                if (config.suffix && p.endsWith(config.suffix)) {
-                                    p = p.substring(0, p.length - config.suffix.length);
+                                // Strip suffix (MJ suffix)
+                                if (currentConfig.suffix && p.endsWith(currentConfig.suffix)) {
+                                    p = p.substring(0, p.length - currentConfig.suffix.length);
+                                }
+                                // Strip grokSuffix (Grok suffix)
+                                if (currentConfig.grokSuffix && p.endsWith(currentConfig.grokSuffix)) {
+                                    p = p.substring(0, p.length - currentConfig.grokSuffix.length);
                                 }
                                 return p.trim();
                             });
 
-                            if (finishedPromptsText.length > 0) {
-                                const { error } = await supabase
-                                    .from('prompts')
-                                    .update({ is_used: true })
-                                    .in('content', finishedPromptsText);
+                            addLog(`[Debug] Đang tìm ${finishedPromptsText.length} prompts để cập nhật: ${finishedPromptsText.map(p => p.substring(0, 50)).join(' | ')}`, 'info');
 
-                                if (!error) {
-                                    addLog(`Đã cập nhật trạng thái hoàn thành cho ${finishedPromptsText.length} prompts trong dữ liệu.`, 'success');
-                                } else {
-                                    addLog(`Lỗi cập nhật CSDL: ${error.message}`, 'error');
+                            if (finishedPromptsText.length > 0) {
+                                // Batch update để tránh lỗi "Bad Request" khi URL quá dài
+                                const BATCH_SIZE = 10;
+                                let totalUpdated = 0;
+                                let batchError = null;
+
+                                for (let i = 0; i < finishedPromptsText.length; i += BATCH_SIZE) {
+                                    const batch = finishedPromptsText.slice(i, i + BATCH_SIZE);
+                                    const { data, error } = await currentSupabase
+                                        .from('prompts')
+                                        .update({ is_used: true })
+                                        .in('content', batch)
+                                        .select();
+
+                                    if (error) {
+                                        batchError = error;
+                                        addLog(`Lỗi cập nhật CSDL (batch ${Math.floor(i / BATCH_SIZE) + 1}): ${error.message}`, 'error');
+                                    } else {
+                                        totalUpdated += (data?.length || 0);
+                                    }
+                                }
+
+                                if (!batchError) {
+                                    addLog(`Đã cập nhật trạng thái hoàn thành cho ${totalUpdated}/${finishedPromptsText.length} prompts trong dữ liệu.`, totalUpdated > 0 ? 'success' : 'warning');
+                                    if (totalUpdated === 0) {
+                                        addLog(`[Debug] Không tìm thấy prompt khớp trong DB. Prompt đầu tiên: "${finishedPromptsText[0]?.substring(0, 80)}"`, 'warning');
+                                    }
                                 }
                             }
                         }
                     }
                 } catch (e) {
                     console.error("Lỗi khi xử lý data.json báo kết quả:", e);
+                    addLog(`[Debug] Lỗi update prompt: ${e.message}`, 'error');
                 }
+            }
+
+            // Xóa danh sách prompt sau khi tạo ảnh xong và cập nhật CSDL
+            setPromptText('');
+            localStorage.removeItem('bulkai_prompts');
+            addLog('Đã xóa danh sách prompt sau khi hoàn thành.', 'info');
+        });
+
+        EventsOn("bridge_status", (status) => {
+            setBridgeRunning(status.running);
+            setExtensionConnected(status.connected);
+            // Khi extension đã kết nối → tắt trạng thái chờ và xóa timeout
+            if (status.connected) {
+                setBridgeWaiting(false);
+                if (bridgeWaitingTimeoutRef.current) {
+                    clearTimeout(bridgeWaitingTimeoutRef.current);
+                    bridgeWaitingTimeoutRef.current = null;
+                }
+            }
+            // Khi bridge tắt → reset trạng thái chờ
+            if (!status.running) {
+                setBridgeWaiting(false);
+                if (bridgeWaitingTimeoutRef.current) {
+                    clearTimeout(bridgeWaitingTimeoutRef.current);
+                    bridgeWaitingTimeoutRef.current = null;
+                }
+            }
+        });
+
+        // ─── Global bridge_response dispatcher (1 listener duy nhất, dispatch theo requestId) ───
+        // Giải quyết race condition: EventsOn chỉ giữ 1 listener/event name
+        // Mọi pending request đều đăng ký callback vào bridgePendingRef.current
+        EventsOn("bridge_response", (data) => {
+            if (!data || !data.id) return;
+            const pending = bridgePendingRef.current[data.id];
+            if (!pending) return; // Không có request nào đang chờ với ID này
+            if (data.status === 'success') {
+                pending.resolve(data);
+            } else {
+                pending.reject(new Error(data.status || "Lỗi từ extension"));
             }
         });
 
@@ -573,8 +975,18 @@ function App() {
             EventsOff("generation_finished");
             EventsOff("grok_chrome_status");
             EventsOff("grok_log");
+            EventsOff("gflow_chrome_status");
+            EventsOff("gflow_log");
+            EventsOff("bridge_status");
+            EventsOff("bridge_response");
         };
     }, []);
+
+    useEffect(() => {
+        setIsSelectingImages(false);
+        setSelectedImageNames([]);
+        setShowExportMenu(false);
+    }, [selectedGalleryFolder]);
 
     const checkSessionStatus = async () => {
         try {
@@ -707,14 +1119,139 @@ function App() {
         }
     };
 
+    const handleToggleGoogleFlowChrome = async () => {
+        setIsTogglingGFlowChrome(true);
+        try {
+            if (googleFlowChromeStatus === 'running' || googleFlowChromeStatus === 'waiting') {
+                await StopGoogleFlowChrome();
+                setGoogleFlowChromeStatus('stopped');
+                addLog('Đã tắt Bridge Google Flow', 'info');
+            } else {
+                addLog('Đang khởi động Bridge WebSocket server...', 'info');
+                const flowUrl = config.googleFlowUrl || 'https://flow.google.com/project';
+                const result = await StartGoogleFlowChrome(flowUrl);
+                if (result && result.startsWith('Error')) {
+                    addLog('Lỗi khi mở Bridge: ' + result, 'error');
+                } else {
+                    setGoogleFlowChromeStatus('waiting');
+                    addLog('✅ Bridge đã chạy! Đang chờ Chrome Extension kết nối...', 'info');
+                    addLog('📋 Hướng dẫn: 1) Cài extension từ thư mục chrome-extension/ 2) Mở labs.google trong Chrome 3) Extension sẽ tự kết nối', 'info');
+                }
+            }
+        } catch (e) {
+            addLog('Lỗi Bridge: ' + e, 'error');
+        } finally {
+            setIsTogglingGFlowChrome(false);
+        }
+    };
+
+    const handleToggleBridge = async () => {
+        try {
+            if (bridgeRunning) {
+                // Xóa timeout nếu có
+                if (bridgeWaitingTimeoutRef.current) {
+                    clearTimeout(bridgeWaitingTimeoutRef.current);
+                    bridgeWaitingTimeoutRef.current = null;
+                }
+                await StopBridge();
+                setBridgeRunning(false);
+                setExtensionConnected(false);
+                setBridgeWaiting(false);
+                addLog('Đã tắt Bridge', 'info');
+            } else {
+                addLog('Đang khởi động Bridge WebSocket server...', 'info');
+                const result = await StartBridge();
+                if (result && result.startsWith('error')) {
+                    addLog('Lỗi khi mở Bridge: ' + result, 'error');
+                } else {
+                    setBridgeRunning(true);
+                    setBridgeWaiting(true);
+                    addLog('Bridge WebSocket server đã chạy! Đang chờ Chrome Extension kết nối (port 8765)...', 'info');
+
+                    // Auto-stop sau 1 phút nếu extension không kết nối
+                    if (bridgeWaitingTimeoutRef.current) {
+                        clearTimeout(bridgeWaitingTimeoutRef.current);
+                    }
+                    bridgeWaitingTimeoutRef.current = setTimeout(async () => {
+                        bridgeWaitingTimeoutRef.current = null;
+                        // Kiểm tra lại trạng thái trước khi tắt
+                        try {
+                            const status = await GetBridgeStatus();
+                            if (status && status.running && !status.connected) {
+                                await StopBridge();
+                                setBridgeRunning(false);
+                                setExtensionConnected(false);
+                                setBridgeWaiting(false);
+                                addLog('Bridge đã tự tắt do không có Extension kết nối sau 1 phút.', 'warning');
+                            }
+                        } catch (e) {
+                            console.error('Lỗi auto-stop bridge:', e);
+                        }
+                    }, 60000);
+                }
+            }
+        } catch (e) {
+            addLog('Lỗi Bridge: ' + e, 'error');
+        }
+    };
+
+    const handleDeleteSelectedImages = async () => {
+        if (selectedImageNames.length === 0) return;
+        if (!confirm(`Bạn có chắc muốn XÓA ${selectedImageNames.length} ảnh đã chọn? Hành động này không thể hoàn tác!`)) return;
+
+        addLog(`Đang xóa ${selectedImageNames.length} ảnh đã chọn...`, 'info');
+        try {
+            let successCount = 0;
+            for (const name of selectedImageNames) {
+                const res = await DeleteImage(config.output, selectedGalleryFolder, name);
+                if (res.startsWith("Success:")) {
+                    successCount++;
+                } else {
+                    addLog(`Lỗi xóa ảnh ${name}: ${res}`, 'error');
+                }
+            }
+            addLog(`Đã xóa thành công ${successCount}/${selectedImageNames.length} ảnh.`, 'success');
+            // Refresh using paginated API
+            setSelectedImageNames([]);
+            setIsSelectingImages(false);
+            handleSelectFolder(selectedGalleryFolder);
+        } catch (e) {
+            addLog(`Lỗi khi xóa các ảnh đã chọn: ${e.message}`, 'error');
+        }
+    };
+
+    const handleSelectAllImages = () => {
+        if (selectedImageNames.length === galleryImages.length) {
+            setSelectedImageNames([]);
+        } else {
+            // Select all currently loaded images
+            setSelectedImageNames(galleryImages.map(img => img.name));
+        }
+    };
+
+    const handleCancelSelection = () => {
+        setIsSelectingImages(false);
+        setSelectedImageNames([]);
+    };
+
+    const stopGeneration = async () => {
+        addLog('⏹️ Đang dừng quá trình tạo ảnh...', 'warning');
+        try {
+            const result = await StopGoogleFlowGeneration();
+            addLog(`⏹️ ${result === 'Stopped' ? 'Đã dừng!' : result}`, result === 'Stopped' ? 'info' : 'warning');
+        } catch (e) {
+            addLog('❌ Lỗi khi dừng: ' + e, 'error');
+        }
+    };
+
     const startGeneration = () => {
-        // --- Grok flow ---
-        if (config.bot === 'grok') {
-            if (grokChromeStatus !== 'running') {
-                addLog('Lỗi: Chrome Grok chưa chạy. Vui lòng nhấn "Bật Chrome" trước.', 'error');
+        // --- Google Flow ---
+        if (config.bot === 'google_flow') {
+            if (googleFlowChromeStatus !== 'running') {
+                addLog('Lỗi: Bridge chưa kết nối Extension. Vui lòng nhấn "Bật Bridge" và cài Extension.', 'error');
                 return;
             }
-            const prompts = promptText.split('\n').map(p => p.trim()).filter(p => p !== '');
+            const prompts = promptText.split('\n').map(p => p.trim()).filter(p => p !== '').map(p => replaceBannedWords(p));
             if (prompts.length === 0) {
                 addLog('Lỗi: Danh sách prompt trống', 'error');
                 return;
@@ -722,8 +1259,41 @@ function App() {
             setIsGenerating(true);
             setStatus({ percentage: 0, estimated: 'Đang xử lý...' });
             setLogs([]);
-            addLog('🤖 Đang khởi tạo Grok image generation...', 'info');
-            addLog(`Gửi ${prompts.length} prompt tới Grok (xAI)...`, 'info');
+            addLog(`🎨 Đang khởi tạo Google Flow generation...`, 'info');
+            addLog(`Gửi ${prompts.length} prompt tới Google Flow qua Bridge...`, 'info');
+            GenerateGoogleFlowImages({
+                prompts: prompts,
+                output: config.output,
+                album: '',
+                download: config.download,
+                flowUrl: config.googleFlowUrl || 'https://flow.google.com/project',
+                delay: parseInt(config.googleFlowDelay) || 10
+            }).then(result => {
+                if (result && result.startsWith && result.startsWith('Error')) {
+                    addLog('❌ ' + result, 'error');
+                    setIsGenerating(false);
+                }
+            });
+            return;
+        }
+
+        // --- Grok flow ---
+        if (config.bot === 'grok' || config.bot === 'grok_imagine') {
+            if (grokChromeStatus !== 'running') {
+                addLog('Lỗi: Chrome Grok chưa chạy. Vui lòng nhấn "Bật Chrome" trước.', 'error');
+                return;
+            }
+            const prompts = promptText.split('\n').map(p => p.trim()).filter(p => p !== '').map(p => replaceBannedWords(p));
+            if (prompts.length === 0) {
+                addLog('Lỗi: Danh sách prompt trống', 'error');
+                return;
+            }
+            const isImagine = config.bot === 'grok_imagine';
+            setIsGenerating(true);
+            setStatus({ percentage: 0, estimated: 'Đang xử lý...' });
+            setLogs([]);
+            addLog(`🤖 Đang khởi tạo Grok ${isImagine ? '/imagine' : 'chat'} generation...`, 'info');
+            addLog(`Gửi ${prompts.length} prompt tới Grok (xAI)${isImagine ? ' - Imagine' : ''}...`, 'info');
             GenerateGrokImages({
                 prompts: prompts,
                 ratio: config.grokRatio || '1:1',
@@ -731,7 +1301,8 @@ function App() {
                 output: config.output,
                 album: '',
                 download: config.download,
-                suffix: config.grokSuffix || ''
+                suffix: config.grokSuffix || '',
+                useImagine: isImagine
             });
             return;
         }
@@ -743,7 +1314,7 @@ function App() {
             return;
         }
 
-        const prompts = promptText.split('\n').map(p => p.trim()).filter(p => p !== '');
+        const prompts = promptText.split('\n').map(p => p.trim()).filter(p => p !== '').map(p => replaceBannedWords(p));
         if (prompts.length === 0) {
             addLog('Lỗi: Danh sách prompt trống', 'error');
             return;
@@ -766,13 +1337,15 @@ function App() {
             alert("Vui lòng nhập ý tưởng!");
             return;
         }
-        if (promptPlatform !== 'gemini' && !config.openaiKey) {
-            alert("Vui lòng cấu hình OpenAI API Key trong thẻ Cài Đặt!");
-            return;
-        }
-        if (promptPlatform === 'gemini' && !config.geminiKey) {
-            alert("Vui lòng cấu hình Gemini API Key trong thẻ Cài Đặt!");
-            return;
+        if (aiSource === 'api') {
+            if (promptPlatform !== 'gemini' && !config.openaiKey) {
+                alert("Vui lòng cấu hình OpenAI API Key trong thẻ Cài Đặt!");
+                return;
+            }
+            if (promptPlatform === 'gemini' && !config.geminiKey) {
+                alert("Vui lòng cấu hình Gemini API Key trong thẻ Cài Đặt!");
+                return;
+            }
         }
 
         setIsGeneratingPrompt(true);
@@ -801,15 +1374,17 @@ NGUYÊN TẮC CỐT LÕI:
 2. ĐỊNH DẠNG BẮT BUỘC: Mọi kết quả phân tích phải được trình bày duy nhất dưới dạng 1 Bảng (Table). Không sử dụng định dạng danh sách liệt kê dài dòng.
 
 QUY TRÌNH LÀM VIỆC:
-Khi tôi cung cấp một từ khóa, hãy suy nghĩ và đề xuất các hướng tiếp cận (Concept) hoàn toàn khác nhau về phong cách. Sau đó, điền các thông tin vào một bảng có cấu trúc các cột như sau:
+Khi tôi cung cấp một từ khóa, hãy suy nghĩ và đề xuất đúng ${promptCount} hướng tiếp cận (Concept) hoàn toàn khác nhau về phong cách cho ${promptIdea}. Điền các thông tin vào một bảng có cấu trúc các cột như sau:
 
 Cột 1: Tên Concept (Tên hướng tiếp cận ngắn gọn. VD: Tối giản & Hữu cơ, Không gian mạng tương lai...)
 Cột 2: Cách thể hiện Chủ thể (Mô tả trực diện vật lý: Từ khóa của tôi sẽ xuất hiện dưới hình dáng, trạng thái hay hành động cụ thể nào trong ảnh để không bị lạc đề?).
 Cột 3: Mục Tiêu Thương Mại (Nhắm đến ai? Dùng làm gì? VD: Bao bì nông sản chế biến, banner website...)
 Cột 4: Cảm Xúc (Vibe) (2-3 tính từ miêu tả cảm giác tổng thể. VD: Mộc mạc, đáng tin cậy...)
 Cột 5: Style Cues (2-3 từ khóa phong cách nghệ thuật cốt lõi làm nguyên liệu viết prompt. VD: Flatlay, Minimalism...)
+TỪ KHÓA CẤM: TUYỆT ĐỐI KHÔNG được sử dụng các từ sau trong bất kỳ nội dung nào: "cutting", "thick", "transparent". Hãy thay thế bằng từ đồng nghĩa phù hợp nếu cần.  
+LƯU Ý ĐỊNH DẠNG: BẮT BUỘC đặt toàn bộ bảng kết quả bên trong một khối code markdown (dùng ). Không viết bảng bên ngoài khối code.
 
-Tiếp theo hãy cho tôi ${promptCount} ý tưởng về ${promptIdea}`
+`
             : `VAI TRÒ CỦA BẠN:
 Bạn là một Chuyên gia Kỹ sư Prompt và Giám đốc Hình ảnh AI hàng đầu. Nhiệm vụ của bạn là nhận các mô tả concept/ý tưởng sơ khai và biến chúng thành ${promptCount} prompt Midjourney tiếng Anh chi tiết, tối ưu và mang tính thẩm mỹ cao nhất.
 
@@ -832,11 +1407,60 @@ Yêu cầu thêm: ${promptDynamic || 'Không có'}
 
 ${existingPromptsText}
 
-LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới, không được lặp lại góc nhìn, bối cảnh hay cách tiếp cận của các prompt đã có ở trên.`;
+LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới, không được lặp lại góc nhìn, bối cảnh hay cách tiếp cận của các prompt đã có ở trên.${bannedWords.length > 0 ? `
+
+CÁC TỪ CẤM - KHÔNG ĐƯỢC SỬ DỤNG (phải dùng từ thay thế tương ứng):
+${bannedWords.map(w => `- "${w.banned}" → thay bằng "${w.replacement || '(bỏ đi)'}" `).join('\n')}` : ''}`;
 
         try {
             let resultText = "";
-            if (promptPlatform !== 'gemini') {
+            if (aiSource === 'addon') {
+                if (!bridgeRunning || !extensionConnected) {
+                    alert("Vui lòng Bật Bridge và kết nối Chrome Extension trước!");
+                    setIsGeneratingPrompt(false);
+                    return;
+                }
+
+                const requestId = "prompt_gen_" + Date.now();
+                addLog(`Đang gửi yêu cầu tạo prompt tới Chrome Extension [ID: ${requestId}]...`, 'info');
+
+                resultText = await new Promise((resolve, reject) => {
+                    const timeoutId = setTimeout(() => {
+                        delete bridgePendingRef.current[requestId];
+                        reject(new Error("Quá thời gian chờ phản hồi từ ChatGPT (2 phút). Kiểm tra ChatGPT đang mở và Extension đang kết nối."));
+                    }, 120000);
+
+                    // Đăng ký callback vào global pending map (không dùng EventsOn để tránh ghi đè)
+                    bridgePendingRef.current[requestId] = {
+                        resolve: (data) => {
+                            clearTimeout(timeoutId);
+                            delete bridgePendingRef.current[requestId];
+                            if (data.status === 'success') {
+                                resolve(data.content);
+                            } else {
+                                reject(new Error(data.status || "Lỗi từ extension"));
+                            }
+                        },
+                        reject: (err) => {
+                            clearTimeout(timeoutId);
+                            delete bridgePendingRef.current[requestId];
+                            reject(err);
+                        }
+                    };
+
+                    SendBridgePrompt(requestId, systemPrompt).then(res => {
+                        if (res !== "ok") {
+                            clearTimeout(timeoutId);
+                            delete bridgePendingRef.current[requestId];
+                            reject(new Error(res));
+                        }
+                    }).catch(err => {
+                        clearTimeout(timeoutId);
+                        delete bridgePendingRef.current[requestId];
+                        reject(err);
+                    });
+                });
+            } else if (promptPlatform !== 'gemini') {
                 const res = await fetch('https://api.openai.com/v1/chat/completions', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.openaiKey}` },
@@ -866,11 +1490,118 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
             }
 
             // Parse result
+            // If the response is wrapped in HTML from the extension DOM scraper, convert it to clean plain text first
+            let htmlTableRows = null;
+            if (resultText && resultText.includes("<") && resultText.includes(">")) {
+                try {
+                    const tempDiv = document.createElement("div");
+                    tempDiv.innerHTML = resultText;
+                    
+                    // 1. Check if there's an HTML <table> tag (rich table rendered by browser/ChatGPT)
+                    const tableEl = tempDiv.querySelector("table");
+                    if (tableEl) {
+                        const trElements = tableEl.querySelectorAll("tr");
+                        const parsedRows = [];
+                        for (let tr of trElements) {
+                            const cells = tr.querySelectorAll("th, td");
+                            if (cells.length >= 5) {
+                                const rowData = Array.from(cells).map(c => c.textContent.trim());
+                                parsedRows.push(rowData);
+                            }
+                        }
+                        if (parsedRows.length > 0) {
+                            htmlTableRows = parsedRows;
+                        }
+                    }
+                    
+                    if (!htmlTableRows) {
+                        // 2. Priority: find <code> FIRST (deepest, cleanest content without toolbar text)
+                        //    ChatGPT structure: <pre> > [toolbar div with "Markdown"/"Copy"] + <code> (actual content)
+                        //    IMPORTANT: ChatGPT uses <span>line</span><br><span>line</span> inside <code>,
+                        //    and .textContent ignores <br> so all lines collapse into one string!
+                        //    Must replace <br> with \n BEFORE extracting textContent.
+                        const codeEl = tempDiv.querySelector("code");
+                        const preEl = tempDiv.querySelector("pre");
+                        const targetEl = codeEl || preEl;
+                        
+                        if (targetEl) {
+                            // Replace ALL <br> elements with newline text nodes to preserve line breaks
+                            targetEl.querySelectorAll("br").forEach(br => {
+                                br.replaceWith("\n");
+                            });
+                            resultText = targetEl.textContent || targetEl.innerText || "";
+                        } else {
+                            // No code/pre tags - preserve newlines from block-level elements
+                            tempDiv.querySelectorAll("br").forEach(br => {
+                                const newline = document.createTextNode("\n");
+                                if (br.parentNode) br.parentNode.replaceChild(newline, br);
+                            });
+                            const blockTags = ["p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "pre"];
+                            blockTags.forEach(tag => {
+                                tempDiv.querySelectorAll(tag).forEach(el => {
+                                    const val = el.textContent || el.innerText || "";
+                                    if (val && !val.endsWith("\n")) {
+                                        el.appendChild(document.createTextNode("\n"));
+                                    }
+                                });
+                            });
+                            resultText = tempDiv.textContent || tempDiv.innerText || "";
+                        }
+                    }
+                } catch (e) {
+                    resultText = resultText.replace(/<[^>]*>/g, "");
+                }
+            }
+
             if (promptMode === 'idea') {
-                const rows = resultText.split('\n')
-                    .filter(line => line.includes('|'))
-                    .map(line => line.split('|').map(c => c.trim()).filter(c => c !== ""))
-                    .filter(cols => cols.length >= 5 && !cols[0].includes('---') && !cols[0].toLowerCase().includes('concept') && !cols[0].toLowerCase().includes('tên'));
+                let rows = [];
+                if (htmlTableRows) {
+                    // Filter headers/dividers from HTML table rows
+                    rows = htmlTableRows.filter(cols => {
+                        if (cols.some(c => c.includes('---'))) return false;
+                        const firstColLower = (cols[0] || '').toLowerCase().trim();
+                        if (firstColLower.includes('tên concept') || firstColLower.includes('concept name') || firstColLower === 'stt' || firstColLower === '#') return false;
+                        return true;
+                    });
+                } else {
+                    // Try to extract content inside the first markdown code block if it exists
+                    const codeBlockMatch = resultText.match(/```(?:markdown|table|)?\n([\s\S]*?)\n```/);
+                    const targetText = codeBlockMatch ? codeBlockMatch[1] : resultText;
+
+                    // Extract only the first contiguous block of lines containing '|'
+                    const lines = targetText.split('\n');
+                    let tableLines = [];
+                    let inTable = false;
+
+                    for (let line of lines) {
+                        const trimmed = line.trim();
+                        if (trimmed.includes('|')) {
+                            inTable = true;
+                            tableLines.push(trimmed);
+                        } else if (inTable) {
+                            break; // Stop as soon as the first table ends
+                        }
+                    }
+
+                    rows = tableLines
+                        .map(line => {
+                            let temp = line;
+                            if (temp.startsWith('|')) temp = temp.slice(1);
+                            if (temp.endsWith('|')) temp = temp.slice(0, -1);
+                            return temp.split('|').map(c => c.trim());
+                        })
+                        .filter(cols => {
+                            if (cols.length < 5) return false;
+                            if (cols.some(c => c.includes('---'))) return false;
+                            const firstColLower = (cols[0] || '').toLowerCase().trim();
+                            if (firstColLower.includes('tên concept') || firstColLower.includes('concept name') || firstColLower === 'stt' || firstColLower === '#') return false;
+                            const isHeader = cols.some(c => {
+                                const val = c.toLowerCase().trim();
+                                return val === 'tên concept' || val === 'cách thể hiện chủ thể' || val === 'mục tiêu thương mại' || val === 'cảm xúc (vibe)' || val === 'style cues';
+                            });
+                            return !isHeader;
+                        });
+                }
 
                 const parsedIdeas = rows.map(cols => ({
                     title: cols[0] || '',
@@ -977,6 +1708,8 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
                         <span className="hidden md:block flex-1 text-left">Thư Viện Ảnh</span>
                         {activeTab === 'gallery' && <ChevronRight size={18} className="hidden md:block opacity-60" />}
                     </button>
+
+
                 </nav>
 
                 <div className="mt-auto px-6 py-8 border-t border-white/[0.03]">
@@ -1025,11 +1758,14 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
                         {activeTab === 'generator' && 'Cài Đặt Trình Tạo'}
                         {activeTab === 'settings' && 'Cài Đặt Hệ Thống'}
                         {activeTab === 'gallery' && 'Thư Viện Ảnh'}
+
                     </h2>
                     {/* Top right pill indicator */}
                     <div className="neumorphic-card px-6 py-3 flex items-center gap-2 border border-white/5">
                         <span className="text-xs text-textSoft uppercase tracking-widest font-semibold">Nền tảng Bot:</span>
-                        <span className="text-sm font-bold text-accentEnd uppercase">{config.bot}</span>
+                        <span className="text-sm font-bold text-accentEnd uppercase">{
+                            {midjourney: 'Midjourney', bluewillow: 'Bluewillow', grok: 'Grok Chat', grok_imagine: 'Grok Imagine', google_flow: 'Google Flow'}[config.bot] || config.bot
+                        }</span>
                     </div>
                 </header>
 
@@ -1093,7 +1829,7 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
                                     </div>
                                 </div>
                                 <div className="flex items-center justify-between pt-2 border-t border-white/5">
-                                    <div className="flex gap-10">
+                                    <div className="flex gap-4 flex-wrap items-center">
                                         <div className="flex items-center gap-3 shrink-0">
                                             <label className="text-xs font-bold text-textSoft uppercase whitespace-nowrap">Số lượng:</label>
                                             <input
@@ -1108,7 +1844,7 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
                                         <div className="flex items-center gap-3 shrink-0">
                                             <label className="text-xs font-bold text-textSoft uppercase whitespace-nowrap">Nền tảng AI:</label>
                                             <select
-                                                className="input-style w-52 py-1.5 px-3 text-sm"
+                                                className="input-style w-44 py-1.5 px-3 text-sm"
                                                 value={promptPlatform}
                                                 onChange={(e) => setPromptPlatform(e.target.value)}
                                             >
@@ -1119,6 +1855,80 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
                                                 <option className="bg-[#1D2130]" value="gemini">Google Gemini</option>
                                             </select>
                                         </div>
+                                        <div className="flex items-center gap-2 shrink-0">
+                                            <label className="text-xs font-bold text-textSoft uppercase whitespace-nowrap">Nguồn AI:</label>
+                                            <div className="flex items-center gap-4">
+                                                <label className="flex items-center gap-2 cursor-pointer group text-xs text-textSoft hover:text-white transition-colors">
+                                                    <input
+                                                        type="radio"
+                                                        name="aiSource"
+                                                        value="api"
+                                                        checked={aiSource === 'api'}
+                                                        onChange={() => setAiSource('api')}
+                                                        className="sr-only"
+                                                    />
+                                                    <div className={`w-4 h-4 rounded-full border flex items-center justify-center transition-all ${aiSource === 'api'
+                                                        ? 'border-accentEnd bg-accentEnd/20 text-accentEnd'
+                                                        : 'border-white/20 group-hover:border-white/40'
+                                                        }`}>
+                                                        {aiSource === 'api' && <div className="w-1.5 h-1.5 rounded-full bg-accentEnd" />}
+                                                    </div>
+                                                    <span>Dùng API</span>
+                                                </label>
+                                                <label className="flex items-center gap-2 cursor-pointer group text-xs text-textSoft hover:text-white transition-colors">
+                                                    <input
+                                                        type="radio"
+                                                        name="aiSource"
+                                                        value="addon"
+                                                        checked={aiSource === 'addon'}
+                                                        onChange={() => setAiSource('addon')}
+                                                        className="sr-only"
+                                                    />
+                                                    <div className={`w-4 h-4 rounded-full border flex items-center justify-center transition-all ${aiSource === 'addon'
+                                                        ? 'border-purple-500 bg-purple-500/20 text-purple-400'
+                                                        : 'border-white/20 group-hover:border-white/40'
+                                                        }`}>
+                                                        {aiSource === 'addon' && <div className="w-1.5 h-1.5 rounded-full bg-purple-500" />}
+                                                    </div>
+                                                    <span>Dùng Add-on</span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        {aiSource === 'addon' && (
+                                            <>
+                                                <button
+                                                    onClick={handleToggleBridge}
+                                                    className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition-all ${bridgeRunning
+                                                        ? 'bg-red-500/15 text-red-400 border-red-500/30 hover:bg-red-500/25'
+                                                        : 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/25'
+                                                        }`}
+                                                >
+                                                    {bridgeRunning ? 'Tắt Bridge' : 'Bật Bridge'}
+                                                </button>
+                                                <div className="flex items-center gap-1.5 shrink-0">
+                                                    <div className={`w-2 h-2 rounded-full ${
+                                                        extensionConnected
+                                                            ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]'
+                                                            : bridgeWaiting
+                                                                ? 'bg-yellow-400 shadow-[0_0_6px_rgba(250,204,21,0.5)] animate-pulse'
+                                                                : 'bg-red-400 shadow-[0_0_6px_rgba(248,113,113,0.5)]'
+                                                        }`} />
+                                                    <span className={`text-xs font-medium ${
+                                                        extensionConnected
+                                                            ? 'text-emerald-400'
+                                                            : bridgeWaiting
+                                                                ? 'text-yellow-400'
+                                                                : 'text-red-400'
+                                                        }`}>
+                                                        {extensionConnected
+                                                            ? 'Extension kết nối'
+                                                            : bridgeWaiting
+                                                                ? 'Đang chờ kết nối...'
+                                                                : 'Extension ngắt'}
+                                                    </span>
+                                                </div>
+                                            </>
+                                        )}
                                     </div>
 
                                     <div className="flex-1"></div>
@@ -1262,51 +2072,55 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
 
                         return (
                             <div className="flex-1 flex flex-col space-y-8 min-h-0">
-                                <div className="neumorphic-panel p-8 flex items-center gap-4 shrink-0">
-                                    <div className="flex-1 relative">
-                                        <input
-                                            type="text"
-                                            className="input-style py-3 px-10 text-sm"
-                                            placeholder="Tìm kiếm nội dung ý tưởng..."
-                                            value={ideaSearch}
-                                            onChange={(e) => setIdeaSearch(e.target.value)}
-                                        />
-                                        <Terminal className="absolute left-3 top-1/2 -translate-y-1/2 text-textSoft" size={18} />
+                                <div className="neumorphic-panel p-6 shrink-0 space-y-3">
+                                    <div className="flex items-center gap-3">
+                                        <div className="relative" style={{ width: '45%' }}>
+                                            <input
+                                                type="text"
+                                                className="input-style w-full py-3 px-10 text-sm"
+                                                placeholder="Tìm kiếm nội dung ý tưởng..."
+                                                value={ideaSearch}
+                                                onChange={(e) => setIdeaSearch(e.target.value)}
+                                            />
+                                            <Terminal className="absolute left-3 top-1/2 -translate-y-1/2 text-textSoft" size={18} />
+                                        </div>
+                                        <select
+                                            className="input-style py-3 text-sm"
+                                            style={{ width: '45%' }}
+                                            value={ideaFilterCategory}
+                                            onChange={(e) => setIdeaFilterCategory(e.target.value)}
+                                        >
+                                            <option value="">Tất cả các loại</option>
+                                            {categories.map(cat => (
+                                                <option key={cat.id} value={cat.id}>{cat.name}</option>
+                                            ))}
+                                        </select>
+                                        <button onClick={fetchIdeas} className="secondary-btn h-12 px-4 shrink-0" style={{ width: '10%', minWidth: '48px' }} title="Làm mới">
+                                            <Zap size={18} className={isLoadingIdeas ? 'animate-spin' : ''} />
+                                        </button>
                                     </div>
-                                    <select
-                                        className="input-style w-60 py-3 text-sm"
-                                        value={ideaFilterCategory}
-                                        onChange={(e) => setIdeaFilterCategory(e.target.value)}
-                                    >
-                                        <option value="">Tất cả các loại</option>
-                                        {categories.map(cat => (
-                                            <option key={cat.id} value={cat.id}>{cat.name}</option>
-                                        ))}
-                                    </select>
-                                    <button onClick={fetchIdeas} className="secondary-btn h-12 px-6">
-                                        <Zap size={18} className={isLoadingIdeas ? 'animate-spin' : ''} />
-                                        Làm mới
-                                    </button>
 
                                     {selectedManageIdeaIds.length > 0 && (
-                                        <button
-                                            onClick={async () => {
-                                                if (confirm(`Bạn có chắc muốn xóa ${selectedManageIdeaIds.length} ý tưởng đã chọn và toàn bộ prompt liên quan?`)) {
-                                                    const { error } = await supabase.from('ideas').delete().in('id', selectedManageIdeaIds);
-                                                    if (!error) {
-                                                        setIdeas(prev => prev.filter(i => !selectedManageIdeaIds.includes(i.id)));
-                                                        setSelectedManageIdeaIds([]);
-                                                        addLog(`Đã xóa ${selectedManageIdeaIds.length} ý tưởng`, 'success');
-                                                    } else {
-                                                        alert("Lỗi khi xóa ý tưởng: " + error.message);
+                                        <div className="flex items-center">
+                                            <button
+                                                onClick={async () => {
+                                                    if (confirm(`Bạn có chắc muốn xóa ${selectedManageIdeaIds.length} ý tưởng đã chọn và toàn bộ prompt liên quan?`)) {
+                                                        const { error } = await supabase.from('ideas').delete().in('id', selectedManageIdeaIds);
+                                                        if (!error) {
+                                                            setIdeas(prev => prev.filter(i => !selectedManageIdeaIds.includes(i.id)));
+                                                            setSelectedManageIdeaIds([]);
+                                                            addLog(`Đã xóa ${selectedManageIdeaIds.length} ý tưởng`, 'success');
+                                                        } else {
+                                                            alert("Lỗi khi xóa ý tưởng: " + error.message);
+                                                        }
                                                     }
-                                                }
-                                            }}
-                                            className="secondary-btn h-12 px-6 bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500 hover:text-white"
-                                        >
-                                            <Trash2 size={18} />
-                                            Xóa {selectedManageIdeaIds.length} mục
-                                        </button>
+                                                }}
+                                                className="secondary-btn h-10 px-5 text-xs bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500 hover:text-white"
+                                            >
+                                                <Trash2 size={16} />
+                                                Xóa {selectedManageIdeaIds.length} mục
+                                            </button>
+                                        </div>
                                     )}
                                 </div>
 
@@ -1355,6 +2169,7 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
                                                             onClick={() => {
                                                                 setSelectedIdeaForModal(idea);
                                                                 fetchIdeaPrompts(idea.id);
+                                                                setPromptSortStatus('default');
                                                                 setShowPromptsModal(true);
                                                             }}
                                                             className="border-b border-white/5 hover:bg-white/5 group transition-colors cursor-pointer"
@@ -1518,12 +2333,14 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
                                             >
                                                 <option className="bg-[#1D2130]" value="midjourney">Midjourney Neural</option>
                                                 <option className="bg-[#1D2130]" value="bluewillow">Bluewillow AI</option>
-                                                <option className="bg-[#1D2130]" value="grok">Grok (xAI)</option>
+                                                <option className="bg-[#1D2130]" value="grok">Grok (xAI) - Chat</option>
+                                                <option className="bg-[#1D2130]" value="grok_imagine">Grok (xAI) - Imagine</option>
+                                                <option className="bg-[#1D2130]" value="google_flow">Google Flow</option>
                                             </select>
                                         </div>
 
                                         {/* Hiển thị Chrome Grok status khi chọn Grok */}
-                                        {config.bot === 'grok' ? (
+                                        {(config.bot === 'grok' || config.bot === 'grok_imagine') ? (
                                             <div className="space-y-4">
                                                 <label className="text-sm font-bold text-textSoft tracking-wide font-mono uppercase">Chrome Grok</label>
                                                 <div className="flex items-center justify-between input-style">
@@ -1537,13 +2354,34 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
                                                         id="btn-toggle-grok-chrome"
                                                         onClick={handleToggleGrokChrome}
                                                         disabled={isTogglingChrome}
-                                                        className={`px-4 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                                                            grokChromeStatus === 'running'
-                                                                ? 'bg-red-500/20 text-red-400 hover:bg-red-500 hover:text-white border border-red-500/30'
-                                                                : 'bg-accentEnd/20 text-accentEnd hover:bg-accentEnd hover:text-white border border-accentEnd/30'
-                                                        } ${isTogglingChrome ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                                        className={`px-4 py-1.5 rounded-xl text-xs font-bold transition-all ${grokChromeStatus === 'running'
+                                                            ? 'bg-red-500/20 text-red-400 hover:bg-red-500 hover:text-white border border-red-500/30'
+                                                            : 'bg-accentEnd/20 text-accentEnd hover:bg-accentEnd hover:text-white border border-accentEnd/30'
+                                                            } ${isTogglingChrome ? 'opacity-50 cursor-not-allowed' : ''}`}
                                                     >
                                                         {isTogglingChrome ? '...' : grokChromeStatus === 'running' ? 'Tắt Chrome' : 'Bật Chrome'}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ) : config.bot === 'google_flow' ? (
+                                            <div className="space-y-4">
+                                                <label className="text-sm font-bold text-textSoft tracking-wide font-mono uppercase">Google Flow Bridge</label>
+                                                <div className="flex items-center justify-between input-style">
+                                                    <div className="flex items-center gap-2">
+                                                        <span className={`w-2.5 h-2.5 rounded-full ${googleFlowChromeStatus === 'running' ? 'bg-green-400 animate-pulse' : googleFlowChromeStatus === 'waiting' ? 'bg-yellow-400 animate-pulse' : 'bg-red-400'}`} />
+                                                        <span className="text-sm font-medium">{googleFlowChromeStatus === 'running' ? '🟢 Extension đã kết nối' : googleFlowChromeStatus === 'waiting' ? '🟡 Chờ Extension...' : '🔴 Bridge đã tắt'}</span>
+                                                    </div>
+                                                    <button
+                                                        id="btn-toggle-gflow-chrome"
+                                                        onClick={handleToggleGoogleFlowChrome}
+                                                        disabled={isTogglingGFlowChrome}
+                                                        className={`px-4 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                                                            googleFlowChromeStatus !== 'stopped'
+                                                                ? 'bg-red-500/20 text-red-400 hover:bg-red-500 hover:text-white border border-red-500/30'
+                                                                : 'bg-green-500/20 text-green-400 hover:bg-green-500 hover:text-white border border-green-500/30'
+                                                        } ${isTogglingGFlowChrome ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                                    >
+                                                        {isTogglingGFlowChrome ? '...' : googleFlowChromeStatus !== 'stopped' ? 'Tắt Bridge' : 'Bật Bridge'}
                                                     </button>
                                                 </div>
                                             </div>
@@ -1561,7 +2399,7 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
                                     </div>
 
                                     {/* Grok-specific settings */}
-                                    {config.bot === 'grok' && (
+                                    {(config.bot === 'grok' || config.bot === 'grok_imagine') && (
                                         <div className="grid grid-cols-2 gap-6 pt-4 border-t border-white/5">
                                             <div className="space-y-3">
                                                 <label className="text-sm font-bold text-textSoft tracking-wide font-mono uppercase">Tỷ lệ ảnh</label>
@@ -1609,7 +2447,7 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
                                         <div className="flex justify-between items-end">
                                             <label className="text-sm font-bold text-textSoft tracking-wide font-mono uppercase">Danh sách Prompt</label>
                                             <div className="flex items-center gap-2">
-                                                {config.bot === 'grok' && (
+                                                {(config.bot === 'grok' || config.bot === 'grok_imagine') && (
                                                     <span className="text-xs text-textSoft/60 italic">Không cần --ar, app tự xử lý</span>
                                                 )}
                                                 <span className="text-xs font-bold text-accentEnd px-3 py-1 rounded-full bg-[#141620] shadow-inner-soft border border-accentEnd/20">
@@ -1651,14 +2489,27 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
                                         </div>
                                     </div>
 
-                                    <button
-                                        onClick={startGeneration}
-                                        disabled={isGenerating}
-                                        className={`primary-btn w-full h-16 text-lg ${isGenerating ? 'opacity-50 cursor-not-allowed scale-[0.99]' : ''}`}
-                                    >
-                                        {isGenerating ? 'Đang tạo ảnh...' : 'Bắt đầu Tạo Ảnh'}
-                                        {!isGenerating && <Play size={24} className="fill-white" />}
-                                    </button>
+                                    <div className="flex gap-3">
+                                        <button
+                                            onClick={startGeneration}
+                                            disabled={isGenerating}
+                                            className={`primary-btn flex-1 h-16 text-lg ${isGenerating ? 'opacity-50 cursor-not-allowed scale-[0.99]' : ''}`}
+                                        >
+                                            {isGenerating ? 'Đang tạo ảnh...' : 'Bắt đầu Tạo Ảnh'}
+                                            {!isGenerating && <Play size={24} className="fill-white" />}
+                                        </button>
+                                        {isGenerating && (
+                                            <button
+                                                onClick={stopGeneration}
+                                                className="h-16 px-6 rounded-xl font-bold text-white flex items-center gap-2 transition-all duration-200 hover:scale-105"
+                                                style={{ background: 'linear-gradient(135deg, #ef4444, #dc2626)', boxShadow: '0 4px 15px rgba(239,68,68,0.4)' }}
+                                                title="Dừng tạo ảnh"
+                                            >
+                                                <X size={24} />
+                                                Dừng
+                                            </button>
+                                        )}
+                                    </div>
 
                                     {isGenerating && (
                                         <div className="neumorphic-card p-4 border border-accentEnd/20 bg-accentEnd/5">
@@ -1745,8 +2596,11 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
                                 <div className="flex flex-col pb-6 border-b border-white/5 space-y-4">
                                     <div className="flex justify-between items-center">
                                         <div>
-                                            <h3 className="text-xl font-bold flex items-center gap-2">Cập nhật phần mềm {isUpdating && <Sparkles size={16} className="animate-spin text-accentEnd"/>}</h3>
-                                            <p className="text-sm text-textSoft mt-1">Kiểm tra phiên bản tự động cài đặt</p>
+                                            <h3 className="text-xl font-bold flex items-center gap-2">Cập nhật phần mềm {isUpdating && <Sparkles size={16} className="animate-spin text-accentEnd" />}</h3>
+                                            <p className="text-sm text-textSoft mt-1">
+                                                Phiên bản hiện tại: <span className="text-accentEnd font-mono font-semibold">v1.0.3</span>
+                                                {updateInfo && !updateInfo.has_update && <span className="ml-2 text-green-400 text-xs">✓ Đang dùng bản mới nhất</span>}
+                                            </p>
                                         </div>
                                         <div className="flex gap-4">
                                             {updateInfo?.has_update ? (
@@ -1865,6 +2719,48 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
                                     </div>
                                 </div>
 
+                                <div className="space-y-4 pb-6 border-b border-white/5">
+                                    <h3 className="text-xl font-bold">Cấu hình Google Flow</h3>
+                                    <p className="text-sm text-textSoft mt-1 mb-4">URL dự án Google Flow để tạo ảnh</p>
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-medium text-textSoft flex items-center gap-2">
+                                            Flow Project URL
+                                        </label>
+                                        <input
+                                            type="text"
+                                            placeholder="https://flow.google.com/project/... hoặc https://labs.google/fx/tools/flow/project/..."
+                                            className="input-style font-mono text-sm"
+                                            value={config.googleFlowUrl || ''}
+                                            onChange={e => setConfig({ ...config, googleFlowUrl: e.target.value })}
+                                        />
+                                        <p className="text-xs text-textSoft/50 mt-1">
+                                            Hỗ trợ cả hai URL Google Flow:
+                                            <br />• <code>https://flow.google.com/project</code> (URL mới)
+                                            <br />• <code>https://labs.google/fx/tools/flow/project/xxxxx</code> (URL cũ)
+                                        </p>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-medium text-textSoft flex items-center gap-2">
+                                            Delay sau mỗi ảnh (giây)
+                                        </label>
+                                        <div className="flex items-center gap-3">
+                                            <input
+                                                type="number"
+                                                min="0"
+                                                max="300"
+                                                id="input-gflow-delay"
+                                                className="input-style w-28 text-center"
+                                                value={config.googleFlowDelay ?? 10}
+                                                onChange={e => setConfig({ ...config, googleFlowDelay: parseInt(e.target.value) || 0 })}
+                                            />
+                                            <span className="text-sm text-textSoft">giây</span>
+                                        </div>
+                                        <p className="text-xs text-textSoft/50 mt-1">
+                                            Thời gian chờ giữa các prompt. Tăng nếu gặp lỗi hoặc ảnh chưa load kịp.
+                                        </p>
+                                    </div>
+                                </div>
+
                                 <div className="flex items-center justify-between pb-6 border-b border-white/5">
                                     <div>
                                         <h3 className="text-xl font-bold">Tự động Upscale</h3>
@@ -1936,11 +2832,79 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
                                         </button>
                                     </div>
                                 </div>
+
+                                {/* Banned Words Section */}
+                                <div className="space-y-4 pt-6 border-t border-white/5">
+                                    <div className="flex items-center justify-between">
+                                        <div>
+                                            <h3 className="text-xl font-bold flex items-center gap-2">
+                                                <span className="text-red-400">⛔</span> Từ cấm (Banned Words)
+                                            </h3>
+                                            <p className="text-sm text-textSoft mt-1">Các từ sẽ tự động bị thay thế khi tạo ảnh và tạo prompt</p>
+                                        </div>
+                                        <button
+                                            onClick={() => setBannedWords(prev => [...prev, { banned: '', replacement: '' }])}
+                                            className="secondary-btn px-4 py-2 text-xs font-bold bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500 hover:text-white transition-all"
+                                        >
+                                            + Thêm từ cấm
+                                        </button>
+                                    </div>
+
+                                    {bannedWords.length === 0 ? (
+                                        <div className="text-center py-6 bg-white/[0.02] rounded-xl border border-dashed border-white/10">
+                                            <p className="text-textSoft/50 text-sm italic">Chưa có từ cấm nào. Nhấn "Thêm từ cấm" để bắt đầu.</p>
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-2">
+                                            <div className="grid grid-cols-[1fr_20px_1fr_40px] gap-2 items-center px-2 text-[10px] uppercase tracking-widest text-textSoft/40 font-bold">
+                                                <span>Từ cấm</span>
+                                                <span></span>
+                                                <span>Thay thế bằng</span>
+                                                <span></span>
+                                            </div>
+                                            {bannedWords.map((entry, idx) => (
+                                                <div key={idx} className="grid grid-cols-[1fr_20px_1fr_40px] gap-2 items-center group">
+                                                    <input
+                                                        type="text"
+                                                        placeholder="Ví dụ: nude"
+                                                        className="input-style text-sm font-mono text-red-300 placeholder:text-red-900/40"
+                                                        value={entry.banned}
+                                                        onChange={e => {
+                                                            const updated = [...bannedWords];
+                                                            updated[idx] = { ...updated[idx], banned: e.target.value };
+                                                            setBannedWords(updated);
+                                                        }}
+                                                    />
+                                                    <span className="text-textSoft/30 text-center text-xs">→</span>
+                                                    <input
+                                                        type="text"
+                                                        placeholder="Ví dụ: artistic"
+                                                        className="input-style text-sm font-mono text-green-300 placeholder:text-green-900/40"
+                                                        value={entry.replacement}
+                                                        onChange={e => {
+                                                            const updated = [...bannedWords];
+                                                            updated[idx] = { ...updated[idx], replacement: e.target.value };
+                                                            setBannedWords(updated);
+                                                        }}
+                                                    />
+                                                    <button
+                                                        onClick={() => setBannedWords(prev => prev.filter((_, i) => i !== idx))}
+                                                        className="p-2 rounded-lg bg-red-500/10 hover:bg-red-500/30 text-red-400 transition-all opacity-0 group-hover:opacity-100"
+                                                        title="Xóa"
+                                                    >
+                                                        <X size={14} />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         </div>
                     )}
 
-                    {activeTab === 'gallery' && (
+
+{activeTab === 'gallery' && (
                         <div className="flex-1 flex gap-6 overflow-hidden min-h-0">
                             {galleryFolders.length === 0 ? (
                                 <div className="flex-1 neumorphic-panel flex items-center justify-center flex-col gap-6 text-center">
@@ -1980,69 +2944,329 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
                                             <h3 className="text-lg font-bold text-white">
                                                 Album: <span className="text-accentEnd font-mono">{selectedGalleryFolder}</span>
                                             </h3>
-                                            <div className="flex items-center gap-4">
+                                            <div className="flex items-center gap-2 flex-wrap">
                                                 <button
                                                     onClick={handleUpscaleFolder}
                                                     disabled={isUpscaling || !selectedGalleryFolder || isExportingExcel}
-                                                    className={`secondary-btn py-1.5 px-4 text-[11px] h-9 gap-2 bg-accentEnd/10 text-accentEnd border-accentEnd/20 hover:bg-accentEnd hover:text-white ${isUpscaling ? 'opacity-50' : ''}`}
+                                                    className={`secondary-btn py-1.5 px-3 text-[11px] h-8 gap-1.5 bg-accentEnd/10 text-accentEnd border-accentEnd/20 hover:bg-accentEnd hover:text-white ${isUpscaling ? 'opacity-50' : ''}`}
+                                                    title="Upscale tất cả ảnh trong album"
                                                 >
-                                                    <Sparkles size={16} className={isUpscaling ? 'animate-spin' : ''} />
-                                                    {isUpscaling ? 'Đang xử lý...' : 'Upscale Toàn Bộ'}
+                                                    <Sparkles size={14} className={isUpscaling ? 'animate-spin' : ''} />
+                                                    {isUpscaling ? 'Đang xử lý...' : 'Upscale'}
                                                 </button>
+                                                <div className="relative">
+                                                    <button
+                                                        onClick={() => setShowExportMenu(!showExportMenu)}
+                                                        disabled={!selectedGalleryFolder || isExportingExcel || isUpscaling}
+                                                        className="secondary-btn py-1.5 px-3 text-[11px] h-8 gap-1.5 bg-white/5 border border-white/10 hover:bg-white/10"
+                                                        title="Xuất báo cáo & quản lý album"
+                                                    >
+                                                        <FileText size={14} />
+                                                        Xuất Báo Cáo
+                                                        <ChevronDown size={12} className={`transform transition-transform duration-200 ${showExportMenu ? 'rotate-180' : ''}`} />
+                                                    </button>
+
+                                                    {showExportMenu && (
+                                                        <>
+                                                            <div className="fixed inset-0 z-40" onClick={() => setShowExportMenu(false)} />
+                                                            <div className="absolute right-0 mt-2 w-56 rounded-xl bg-[#141824] border border-white/[0.08] shadow-2xl p-1.5 z-50 animate-in fade-in slide-in-from-top-2 duration-150">
+                                                                {/* Excel Section */}
+                                                                <div className="px-2 py-1 text-[10px] font-semibold text-textSoft/60 uppercase tracking-wider">Excel</div>
+                                                                <button
+                                                                    onClick={() => handleExportWithKeywords('excel', 'api')}
+                                                                    disabled={isExportingExcel || isUpscaling}
+                                                                    className="w-full text-left px-3 py-2 rounded-lg text-xs hover:bg-white/5 flex items-center gap-2 text-textSoft hover:text-white transition-all"
+                                                                >
+                                                                    <FileSpreadsheet size={13} className="text-emerald-400" />
+                                                                    <span>Xuất Excel</span>
+                                                                    <span className="ml-auto text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-medium">API</span>
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => handleExportWithKeywords('excel', 'addon')}
+                                                                    disabled={isExportingExcel || isUpscaling}
+                                                                    className="w-full text-left px-3 py-2 rounded-lg text-xs hover:bg-white/5 flex items-center gap-2 text-textSoft hover:text-white transition-all"
+                                                                >
+                                                                    <FileSpreadsheet size={13} className="text-emerald-400" />
+                                                                    <span>Xuất Excel</span>
+                                                                    <span className="ml-auto text-[9px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 font-medium">Addon</span>
+                                                                </button>
+
+                                                                {/* Fix Title Section */}
+                                                                <button
+                                                                    onClick={async () => {
+                                                                        setShowExportMenu(false);
+                                                                        if (!selectedGalleryFolder) return;
+                                                                        addLog(`Đang fix title Excel cho album: ${selectedGalleryFolder}...`, 'info');
+                                                                        try {
+                                                                            const res = await FixExcelTitles(config.output, selectedGalleryFolder, config.prefix);
+                                                                            if (res.startsWith('Success:')) {
+                                                                                const detail = res.substring('Success: '.length);
+                                                                                addLog(`✓ Fix title xong: ${detail}`, 'success');
+                                                                                alert(`Fix title Excel thành công!\n${detail}`);
+                                                                            } else {
+                                                                                addLog(`Lỗi fix title: ${res}`, 'error');
+                                                                                alert('Lỗi: ' + res);
+                                                                            }
+                                                                        } catch (e) {
+                                                                            addLog(`Lỗi fix title: ${e.message}`, 'error');
+                                                                            alert('Lỗi: ' + e.message);
+                                                                        }
+                                                                    }}
+                                                                    disabled={isExportingExcel || isUpscaling}
+                                                                    className="w-full text-left px-3 py-2 rounded-lg text-xs hover:bg-amber-500/10 flex items-center gap-2 text-amber-400 hover:text-amber-300 transition-all"
+                                                                >
+                                                                    <Sparkles size={13} className="text-amber-400" />
+                                                                    <span>Fix Title Excel</span>
+                                                                    <span className="ml-auto text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 font-medium">CLEAN</span>
+                                                                </button>
+
+                                                                <button
+                                                                    onClick={async () => {
+                                                                        setShowExportMenu(false);
+                                                                        if (!selectedGalleryFolder) return;
+                                                                        addLog(`Đang fix data.json cho album: ${selectedGalleryFolder}...`, 'info');
+                                                                        try {
+                                                                            const res = await FixAlbumData(config.output, selectedGalleryFolder);
+                                                                            if (res.startsWith('Success:')) {
+                                                                                addLog(res, 'success');
+                                                                                alert(res);
+                                                                            } else {
+                                                                                addLog(res, 'error');
+                                                                                alert(res);
+                                                                            }
+                                                                        } catch (e) {
+                                                                            addLog(`Lỗi fix data.json: ${e.message}`, 'error');
+                                                                            alert('Lỗi: ' + e.message);
+                                                                        }
+                                                                    }}
+                                                                    disabled={isExportingExcel || isUpscaling}
+                                                                    className="w-full text-left px-3 py-2 rounded-lg text-xs hover:bg-cyan-500/10 flex items-center gap-2 text-cyan-400 hover:text-cyan-300 transition-all"
+                                                                >
+                                                                    <FileText size={13} className="text-cyan-400" />
+                                                                    <span>Fix data.json</span>
+                                                                    <span className="ml-auto text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 font-medium">IMAGES</span>
+                                                                </button>
+
+                                                                <div className="h-[1px] bg-white/[0.08] my-1" />
+
+                                                                {/* CSV Section */}
+                                                                <div className="px-2 py-1 text-[10px] font-semibold text-textSoft/60 uppercase tracking-wider">CSV</div>
+                                                                <button
+                                                                    onClick={() => handleExportWithKeywords('csv', 'api')}
+                                                                    disabled={isExportingExcel || isUpscaling}
+                                                                    className="w-full text-left px-3 py-2 rounded-lg text-xs hover:bg-white/5 flex items-center gap-2 text-textSoft hover:text-white transition-all"
+                                                                >
+                                                                    <FileText size={13} className="text-blue-400" />
+                                                                    <span>Xuất CSV</span>
+                                                                    <span className="ml-auto text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-medium">API</span>
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => handleExportWithKeywords('csv', 'addon')}
+                                                                    disabled={isExportingExcel || isUpscaling}
+                                                                    className="w-full text-left px-3 py-2 rounded-lg text-xs hover:bg-white/5 flex items-center gap-2 text-textSoft hover:text-white transition-all"
+                                                                >
+                                                                    <FileText size={13} className="text-blue-400" />
+                                                                    <span>Xuất CSV</span>
+                                                                    <span className="ml-auto text-[9px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 font-medium">Addon</span>
+                                                                </button>
+                                                                <button
+                                                                    onClick={async () => {
+                                                                        setShowExportMenu(false);
+                                                                        if (!selectedGalleryFolder) return;
+                                                                        addLog(`Đang xuất CSV (không keywords) cho album: ${selectedGalleryFolder}...`, 'info');
+                                                                        try {
+                                                                            const res = await ExportCSV(config.output, selectedGalleryFolder);
+                                                                            if (res.startsWith("Success:")) {
+                                                                                const filePath = res.split(': ')[1];
+                                                                                addLog(`Đã xuất CSV thành công: ${filePath}`, 'success');
+                                                                                alert(`Đã xuất CSV thành công!\nĐường dẫn: ${filePath}`);
+                                                                            } else {
+                                                                                addLog(`Lỗi xuất CSV: ${res}`, 'error');
+                                                                                alert("Lỗi: " + res);
+                                                                            }
+                                                                        } catch (e) {
+                                                                            addLog(`Lỗi xuất CSV: ${e.message}`, 'error');
+                                                                        }
+                                                                    }}
+                                                                    className="w-full text-left px-3 py-2 rounded-lg text-xs hover:bg-white/5 flex items-center gap-2 text-textSoft hover:text-white transition-all"
+                                                                >
+                                                                    <FileText size={13} className="text-gray-400" />
+                                                                    <span>Xuất CSV (không keywords)</span>
+                                                                </button>
+
+                                                                <div className="h-[1px] bg-white/[0.08] my-1" />
+                                                                <button
+                                                                    onClick={async () => {
+                                                                        setShowExportMenu(false);
+                                                                        if (!selectedGalleryFolder) return;
+                                                                        if (!confirm(`Bạn có chắc muốn XÓA album "${selectedGalleryFolder}"?\nHành động này không thể hoàn tác!`)) return;
+                                                                        try {
+                                                                            const res = await DeleteAlbum(config.output, selectedGalleryFolder);
+                                                                            if (res.startsWith("Success:")) {
+                                                                                addLog(`Đã xóa album: ${selectedGalleryFolder}`, 'success');
+                                                                                const folders = await GetGalleryFolders(config.output);
+                                                                                setGalleryFolders(folders || []);
+                                                                                setSelectedGalleryFolder('');
+                                                                                setGalleryImages([]);
+                                                                            } else {
+                                                                                addLog(`Lỗi xóa album: ${res}`, 'error');
+                                                                                alert("Lỗi: " + res);
+                                                                            }
+                                                                        } catch (e) {
+                                                                            addLog(`Lỗi xóa album: ${e.message}`, 'error');
+                                                                        }
+                                                                    }}
+                                                                    className="w-full text-left px-3 py-2 rounded-lg text-xs hover:bg-red-500/10 text-red-400 hover:text-red-300 flex items-center gap-2 transition-all"
+                                                                >
+                                                                    <Trash2 size={13} />
+                                                                    <span>Xóa Album</span>
+                                                                </button>
+                                                            </div>
+                                                        </>
+                                                    )}
+                                                </div>
                                                 <button
-                                                    onClick={handleExportExcel}
-                                                    disabled={isExportingExcel || !selectedGalleryFolder || isUpscaling}
-                                                    className={`secondary-btn py-1.5 px-4 text-[11px] h-9 gap-2 ${isExportingExcel ? 'opacity-50' : ''}`}
+                                                    onClick={() => setIsSelectingImages(true)}
+                                                    disabled={!selectedGalleryFolder || galleryImages.length === 0}
+                                                    className="secondary-btn py-1.5 px-3 text-[11px] h-8 gap-1.5 bg-purple-500/10 text-purple-300 border-purple-500/20 hover:bg-purple-500 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    title="Chọn ảnh để xóa"
                                                 >
-                                                    <FileSpreadsheet size={16} className={isExportingExcel ? 'animate-pulse' : ''} />
-                                                    {isExportingExcel ? 'Đang xuất...' : 'Xuất Báo Cáo'}
+                                                    <CheckSquare size={14} />
+                                                    Chọn Ảnh
                                                 </button>
                                                 <span className="text-sm text-textSoft px-3 py-1 bg-white/5 rounded-full border border-white/10">
-                                                    {galleryImages.length} ảnh
+                                                    {galleryTotal} ảnh
                                                 </span>
                                             </div>
                                         </div>
 
+                                        {isSelectingImages && (
+                                            <div className="flex items-center justify-between bg-purple-500/10 border border-purple-500/20 rounded-xl p-3 mb-4 animate-in slide-in-from-top-1 duration-200">
+                                                <div className="flex items-center gap-3">
+                                                    <span className="text-xs text-purple-300 font-medium">
+                                                        Đang chọn: <strong className="text-white text-sm">{selectedImageNames.length}</strong> / {galleryTotal} ảnh
+                                                    </span>
+                                                    <button
+                                                        onClick={handleSelectAllImages}
+                                                        className="px-2.5 py-1 rounded bg-white/5 hover:bg-white/10 text-white text-[11px] font-medium transition-all"
+                                                    >
+                                                        {selectedImageNames.length === galleryImages.length ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}
+                                                    </button>
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <button
+                                                        onClick={handleDeleteSelectedImages}
+                                                        disabled={selectedImageNames.length === 0}
+                                                        className="px-3 py-1 rounded bg-red-500 hover:bg-red-600 text-white text-[11px] font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                                                    >
+                                                        <Trash2 size={11} />
+                                                        Xóa ảnh đã chọn
+                                                    </button>
+                                                    <button
+                                                        onClick={handleCancelSelection}
+                                                        className="px-3 py-1 rounded bg-white/10 hover:bg-white/15 text-white text-[11px] font-medium transition-all"
+                                                    >
+                                                        Hủy
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        )}
+
                                         <div className="flex-1 overflow-y-auto pr-2 scrollbar">
-                                            {galleryImages.length === 0 ? (
+                                            {galleryImages.length === 0 && !isLoadingGallery ? (
                                                 <div className="flex flex-col items-center justify-center h-full text-textSoft">
                                                     <ImageIcon size={32} className="opacity-50 mb-3" />
                                                     <p>Không có ảnh Thumb nào trong thư mục này.</p>
                                                 </div>
                                             ) : (
                                                 <div className="flex flex-wrap gap-4 justify-start">
-                                                    {galleryImages.map((img, idx) => (
-                                                        <div
-                                                            key={idx}
-                                                            onClick={async () => {
-                                                                setIsLoadingFullImage(true);
-                                                                try {
-                                                                    const fullB64 = await GetImageFullBase64(config.output, selectedGalleryFolder, img.name);
-                                                                    if (fullB64) {
-                                                                        setPreviewImage({ name: img.name, base64: fullB64 });
-                                                                        setCurrentPreviewIndex(idx);
+                                                    {galleryImages.map((img, idx) => {
+                                                        const isSelected = selectedImageNames.includes(img.name);
+                                                        // Find the real index in the full galleryImageNames list
+                                                        const globalIdx = galleryImageNames.findIndex(n => n.name === img.name);
+                                                        return (
+                                                            <div
+                                                                key={img.name}
+                                                                onClick={async () => {
+                                                                    if (isSelectingImages) {
+                                                                        if (isSelected) {
+                                                                            setSelectedImageNames(prev => prev.filter(name => name !== img.name));
+                                                                        } else {
+                                                                            setSelectedImageNames(prev => [...prev, img.name]);
+                                                                        }
+                                                                    } else {
+                                                                        setIsLoadingFullImage(true);
+                                                                        try {
+                                                                            const fullB64 = await GetImageFullBase64(config.output, selectedGalleryFolder, img.name);
+                                                                            if (fullB64) {
+                                                                                setPreviewImage({ name: img.name, base64: fullB64 });
+                                                                                setCurrentPreviewIndex(globalIdx >= 0 ? globalIdx : idx);
+                                                                            }
+                                                                        } catch (e) {
+                                                                            console.error("Lỗi khi tải ảnh gốc:", e);
+                                                                        } finally {
+                                                                            setIsLoadingFullImage(false);
+                                                                        }
                                                                     }
-                                                                } catch (e) {
-                                                                    console.error("Lỗi khi tải ảnh gốc:", e);
-                                                                } finally {
-                                                                    setIsLoadingFullImage(false);
-                                                                }
-                                                            }}
-                                                            className="w-[182px] h-[102px] rounded-xl bg-white/5 border border-white/10 overflow-hidden group relative shrink-0 shadow-glow-sm cursor-zoom-in active:scale-95 transition-transform"
-                                                        >
-                                                            <img
-                                                                src={img.base64}
-                                                                alt={img.name}
-                                                                className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
-                                                                loading="lazy"
-                                                            />
-                                                            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-2 flex flex-col justify-end">
-                                                                <p className="text-[9px] text-white font-mono break-all line-clamp-2 leading-tight">
-                                                                    {img.name}
-                                                                </p>
+                                                                }}
+                                                                className={`w-[182px] h-[102px] rounded-xl bg-white/5 border overflow-hidden group relative shrink-0 shadow-glow-sm active:scale-95 transition-all ${isSelected
+                                                                    ? 'border-purple-500 ring-2 ring-purple-500/50'
+                                                                    : 'border-white/10 hover:border-white/20'
+                                                                    } ${isSelectingImages ? 'cursor-pointer' : 'cursor-zoom-in'}`}
+                                                            >
+                                                                {isSelectingImages && (
+                                                                    <div className={`absolute top-2 right-2 z-10 w-5 h-5 rounded flex items-center justify-center border transition-all ${isSelected
+                                                                        ? 'bg-purple-500 border-purple-500 text-white'
+                                                                        : 'bg-black/50 border-white/40 text-transparent'
+                                                                        }`}>
+                                                                        <CheckSquare size={12} className={isSelected ? '' : 'hidden'} />
+                                                                    </div>
+                                                                )}
+                                                                <img
+                                                                    src={img.base64}
+                                                                    alt={img.name}
+                                                                    className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                                                                    loading="lazy"
+                                                                />
+                                                                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-2 flex flex-col justify-end">
+                                                                    <p className="text-[9px] text-white font-mono break-all line-clamp-2 leading-tight">
+                                                                        {img.name}
+                                                                    </p>
+                                                                </div>
                                                             </div>
-                                                        </div>
-                                                    ))}
+                                                        );
+                                                    })}
+                                                </div>
+                                            )}
+
+                                            {/* Load More button */}
+                                            {galleryPage < galleryTotalPages && (
+                                                <div className="flex justify-center mt-6 mb-2">
+                                                    <button
+                                                        onClick={handleLoadMoreGallery}
+                                                        disabled={isLoadingGallery}
+                                                        className={`px-8 py-2.5 rounded-xl font-bold text-sm transition-all border ${isLoadingGallery
+                                                            ? 'bg-white/5 text-textSoft border-white/5 cursor-wait'
+                                                            : 'bg-accentEnd/10 text-accentEnd border-accentEnd/20 hover:bg-accentEnd hover:text-white shadow-glow-sm'
+                                                            }`}
+                                                    >
+                                                        {isLoadingGallery ? (
+                                                            <span className="flex items-center gap-2">
+                                                                <div className="w-4 h-4 border-2 border-textSoft/30 border-t-accentEnd rounded-full animate-spin" />
+                                                                Đang tải...
+                                                            </span>
+                                                        ) : (
+                                                            `Tải thêm (${galleryImages.length}/${galleryTotal})`
+                                                        )}
+                                                    </button>
+                                                </div>
+                                            )}
+
+                                            {/* Loading spinner for initial load */}
+                                            {isLoadingGallery && galleryImages.length === 0 && (
+                                                <div className="flex flex-col items-center justify-center h-full text-textSoft gap-3">
+                                                    <div className="w-10 h-10 border-3 border-white/10 border-t-accentEnd rounded-full animate-spin" />
+                                                    <p className="text-sm">Đang tải thumbnail...</p>
                                                 </div>
                                             )}
                                         </div>
@@ -2121,7 +3345,7 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
                                 <p className="text-white font-mono text-sm font-semibold tracking-tight">{previewImage.name}</p>
                                 <div className="h-4 w-px bg-white/20" />
                                 <span className="text-accentEnd font-black font-mono text-sm min-w-[60px] text-center">
-                                    {(currentPreviewIndex + 1).toString().padStart(2, '0')} / {galleryImages.length.toString().padStart(2, '0')}
+                                    {(currentPreviewIndex + 1).toString().padStart(2, '0')} / {galleryImageNames.length.toString().padStart(2, '0')}
                                 </span>
                             </div>
                         </div>
@@ -2287,13 +3511,34 @@ LƯU Ý QUAN TRỌNG: Bạn phải tạo ra các phương án hoàn toàn mới,
                                                     <th className="py-4 px-4 w-12 text-center">STT</th>
                                                     <th className="py-4 px-4 w-40">Tên Prompt</th>
                                                     <th className="py-4 px-4">Nội dung Prompt</th>
-                                                    <th className="py-4 px-4 w-32 text-center">Trạng thái</th>
+                                                    <th className="py-4 px-4 w-32 text-center">
+                                                        <button
+                                                            onClick={() => {
+                                                                setPromptSortStatus(prev => {
+                                                                    if (prev === 'default') return 'unused_first';
+                                                                    if (prev === 'unused_first') return 'used_first';
+                                                                    return 'default';
+                                                                });
+                                                            }}
+                                                            className="flex items-center gap-1 mx-auto hover:text-accentEnd transition-colors group"
+                                                            title="Nhấn để sắp xếp theo trạng thái"
+                                                        >
+                                                            Trạng thái
+                                                            <span className={`text-[8px] transition-colors ${promptSortStatus !== 'default' ? 'text-accentEnd' : 'text-textSoft/30 group-hover:text-textSoft/60'}`}>
+                                                                {promptSortStatus === 'unused_first' ? '▲' : promptSortStatus === 'used_first' ? '▼' : '◆'}
+                                                            </span>
+                                                        </button>
+                                                    </th>
                                                     <th className="py-4 px-4 w-32 text-center">Ngày tạo</th>
                                                     <th className="py-4 px-4 w-28 text-center">Hành động</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
-                                                {modalPrompts.map((p, pIdx) => (
+                                                {[...modalPrompts].sort((a, b) => {
+                                                    if (promptSortStatus === 'unused_first') return (a.is_used === b.is_used) ? 0 : a.is_used ? 1 : -1;
+                                                    if (promptSortStatus === 'used_first') return (a.is_used === b.is_used) ? 0 : a.is_used ? -1 : 1;
+                                                    return 0;
+                                                }).map((p, pIdx) => (
                                                     <tr key={p.id} className="border-b border-white/5 hover:bg-white/[0.02] transition-colors group">
                                                         <td className="py-4 px-4 text-center">
                                                             <button

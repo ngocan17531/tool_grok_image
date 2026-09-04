@@ -20,12 +20,13 @@ import (
 
 // GrokConfig chứa cấu hình cho Grok generation
 type GrokConfig struct {
-	Output   string
-	AlbumID  string
-	Prompts  []string
-	Download bool
-	Suffix   string // Hậu tố thêm vào cuối mỗi prompt
-	Count    int    // Số ảnh mỗi prompt (mặc định 4)
+	Output     string
+	AlbumID    string
+	Prompts    []string
+	Download   bool
+	Suffix     string // Hậu tố thêm vào cuối mỗi prompt
+	Count      int    // Số ảnh mỗi prompt (mặc định 4)
+	UseImagine bool   // Dùng trang /imagine riêng (ko cần prefix "Generate N images")
 }
 
 // GrokImage đại diện cho ảnh được tạo
@@ -181,7 +182,7 @@ func (g *GrokChrome) GenerateBatch(cfg *GrokConfig, onProgress StatusCallback) (
 	}
 
 	// Navigate 1 lần duy nhất
-	if err := g.navigateToImagePage(ctx); err != nil {
+	if err := g.navigateToImagePage(ctx, cfg.UseImagine); err != nil {
 		return nil, err
 	}
 	if err := g.waitForReady(ctx); err != nil {
@@ -203,7 +204,7 @@ func (g *GrokChrome) GenerateBatch(cfg *GrokConfig, onProgress StatusCallback) (
 			onProgress(i, total, fmt.Sprintf("[%d/%d] ⌨️ Nhập prompt: %s", i+1, total, truncate(prompt, 60)), false)
 		}
 
-		imgs, err := g.generateOne(ctx, prompt, i, imgDir, thumbDir, cfg.Download, cfg.Suffix, cfg.Count, processedURLs, onProgress, i, total)
+		imgs, err := g.generateOne(ctx, prompt, i, imgDir, thumbDir, cfg.Download, cfg.Suffix, cfg.Count, cfg.UseImagine, processedURLs, onProgress, i, total)
 		if err != nil {
 			log.Printf("Grok: Lỗi prompt %d: %v", i, err)
 			if onProgress != nil {
@@ -230,13 +231,19 @@ func (g *GrokChrome) GenerateBatch(cfg *GrokConfig, onProgress StatusCallback) (
 }
 
 // navigateToImagePage điều hướng đến trang chat mới trên grok.com
-func (g *GrokChrome) navigateToImagePage(ctx context.Context) error {
-	log.Println("Grok: Đang mở trang mới...")
+func (g *GrokChrome) navigateToImagePage(ctx context.Context, useImagine bool) error {
+	var targetURL string
+	if useImagine {
+		targetURL = "https://grok.com/imagine"
+		log.Println("Grok: Đang mở trang /imagine...")
+	} else {
+		targetURL = "https://grok.com"
+		log.Println("Grok: Đang mở trang chính...")
+	}
 
-	// Mở conversation mới — dùng URL trực tiếp
-	err := chromedp.Run(ctx, chromedp.Navigate("https://grok.com"))
+	err := chromedp.Run(ctx, chromedp.Navigate(targetURL))
 	if err != nil {
-		return fmt.Errorf("không thể navigate grok.com: %w", err)
+		return fmt.Errorf("không thể navigate %s: %w", targetURL, err)
 	}
 	time.Sleep(2 * time.Second)
 	return nil
@@ -312,7 +319,8 @@ func (g *GrokChrome) generateOne(
 	doDownload bool,
 	suffix string,
 	imgCount int,
-	processedURLs map[string]bool, // URLs đã xử lý từ prompt trước (cùng session)
+	useImagine bool,
+	processedURLs map[string]bool,
 	onProgress StatusCallback,
 	current, total int,
 ) ([]*GrokImage, error) {
@@ -322,8 +330,15 @@ func (g *GrokChrome) generateOne(
 		imgCount = 4
 	}
 
-	// Tạo prompt đầy đủ: "Generate N images: " + prompt + suffix
-	fullPrompt := fmt.Sprintf("Generate %d images: %s", imgCount, prompt)
+	// Tạo prompt đầy đủ
+	var fullPrompt string
+	if useImagine {
+		// Trang /imagine tự xử lý tạo ảnh — không cần prefix
+		fullPrompt = prompt
+	} else {
+		// Trang chính cần instruction rõ ràng
+		fullPrompt = fmt.Sprintf("Generate %d images: %s", imgCount, prompt)
+	}
 	if suffix != "" {
 		fullPrompt = fullPrompt + " " + suffix
 	}
@@ -893,22 +908,42 @@ func (g *GrokChrome) waitForNewImages(ctx context.Context, expectedCount int, pr
 	return lastNewURLs
 }
 
-// getFullyLoadedImages lấy URLs ảnh đã load đầy đủ trong DOM
-// CHỈ lấy ảnh từ assets.grok.com có /generated/ trong path + img.complete + naturalWidth > 200
+// getFullyLoadedImages lấy URLs ảnh đã load đầy đủ trong DOM.
+// Bắt buộc lấy từ các nguồn ảnh generated thực tế của Grok trên trang imagine:
+// - https://imagine-public.x.ai/imagine-public/images/...
+// - https://assets.grok.com/users/.../generated/.../image.jpg?cache=1
+// và bỏ qua favicon/logo/avatar/icon UI assets.
 func (g *GrokChrome) getFullyLoadedImages(ctx context.Context) []string {
 	var urls []string
 	_ = chromedp.Run(ctx, chromedp.Evaluate(`
 		(function() {
 			const result = [];
-			const imgs = document.querySelectorAll('img[src]');
-			for (const img of imgs) {
-				const src = img.src || '';
-				// CHỈ lấy ảnh generated từ Grok
-				if (src.includes('assets.grok.com') && src.includes('/generated/')) {
-					// Kiểm tra ảnh đã load đầy đủ (hiện hình full)
-					if (img.complete && img.naturalWidth > 200 && img.naturalHeight > 200) {
-						result.push(src);
-					}
+			const seen = new Set();
+			const candidateNodes = [
+				...document.querySelectorAll('button[aria-label*="Open saved image"] img'),
+				...document.querySelectorAll('a[href*="/imagine/post/"] img'),
+				...document.querySelectorAll('img[src*="imagine-public.x.ai"], img[src*="assets.grok.com/users/"], img[src*="/generated/"], img[src*="/images/"]')
+			];
+			for (const node of candidateNodes) {
+				const src = (node.currentSrc || node.src || '').trim();
+				if (!src || src.startsWith('blob:') || src.startsWith('data:')) continue;
+
+				const clean = src.split('?')[0].split('#')[0];
+				const lower = clean.toLowerCase();
+				const isGeneratedAsset =
+					lower.includes('imagine-public.x.ai/imagine-public/images/') ||
+					(lower.includes('assets.grok.com/users/') && lower.includes('/generated/')) ||
+					((lower.includes('grok.com') || lower.includes('.grok.com') || lower.includes('x.ai')) &&
+						(lower.includes('/generated/') || lower.includes('/images/') || lower.includes('/uploads/') || lower.includes('/media/') || lower.includes('/output/')));
+				const isRenderableImage = /\.(png|jpe?g|webp|gif|avif)(\?|$)/i.test(lower);
+				if (!isGeneratedAsset && !isRenderableImage) continue;
+				if (!node.complete || node.naturalWidth <= 200 || node.naturalHeight <= 200) continue;
+				if (lower.includes('favicon') || lower.includes('logo') || lower.includes('avatar') || lower.includes('icon') || lower.includes('sprite') || lower.includes('.svg')) continue;
+				if (!seen.has(clean)) {
+					seen.add(clean);
+					// Luôn push URL đã chuẩn hoá (không có query params)
+					// để processedURLs comparison hoạt động nhất quán
+					result.push(clean);
 				}
 			}
 			return result;
@@ -917,13 +952,18 @@ func (g *GrokChrome) getFullyLoadedImages(ctx context.Context) []string {
 	return urls
 }
 
-// sameSlice kiểm tra 2 slice string có giống nhau không
+// sameSlice kiểm tra 2 slice string có cùng tập hợp phần tử không (không phụ thuộc thứ tự)
+// Dùng Set-comparison để tránh false reset khi DOM reorder URLs giữa các lần scan
 func sameSlice(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for i := range a {
-		if a[i] != b[i] {
+	setA := make(map[string]bool, len(a))
+	for _, v := range a {
+		setA[v] = true
+	}
+	for _, v := range b {
+		if !setA[v] {
 			return false
 		}
 	}
@@ -1133,13 +1173,14 @@ func downloadImageHTTP(imageURL, imgDir, thumbDir, fileName string) (string, err
 // downloadViaJS tải ảnh cookie-protected URL qua JavaScript trong browser
 func (g *GrokChrome) downloadViaJS(ctx context.Context, imageURL, outputPath string) error {
 	var b64Data string
-	// Dùng runtime.EvaluateParams.WithAwaitPromise(true) để await async function
+	encodedURL := strings.ReplaceAll(imageURL, "\"", "\\\"")
 	err := chromedp.Run(ctx, chromedp.Evaluate(
 		fmt.Sprintf(`
 			(async function() {
 				try {
 					const r = await fetch(%q, {
 						credentials: 'include',
+						mode: 'cors',
 						headers: { 'Referer': 'https://grok.com/' }
 					});
 					if (!r.ok) return '';
@@ -1151,9 +1192,24 @@ func (g *GrokChrome) downloadViaJS(ctx context.Context, imageURL, outputPath str
 						};
 						reader.readAsDataURL(blob);
 					});
-				} catch(e) { return ''; }
+				} catch (e) {
+					try {
+						const image = new Image();
+						image.crossOrigin = 'anonymous';
+						image.src = %q;
+						await image.decode();
+						const canvas = document.createElement('canvas');
+						canvas.width = image.naturalWidth;
+						canvas.height = image.naturalHeight;
+						const ctx = canvas.getContext('2d');
+						ctx.drawImage(image, 0, 0);
+						return canvas.toDataURL('image/jpeg', 0.92).split(',')[1] || '';
+					} catch (_) {
+						return '';
+					}
+				}
 			})()
-		`, imageURL),
+		`, imageURL, encodedURL),
 		&b64Data,
 		func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
 			return p.WithAwaitPromise(true)
@@ -1164,7 +1220,7 @@ func (g *GrokChrome) downloadViaJS(ctx context.Context, imageURL, outputPath str
 		return fmt.Errorf("JS eval lỗi: %w", err)
 	}
 	if b64Data == "" {
-		return fmt.Errorf("JS trả về rỗng (có thể fetch thất bại hoặc không có quyền)") 
+		return fmt.Errorf("JS trả về rỗng (có thể fetch thất bại hoặc không có quyền)")
 	}
 	data, err := base64.StdEncoding.DecodeString(b64Data)
 	if err != nil {
@@ -1177,13 +1233,19 @@ func (g *GrokChrome) downloadViaJS(ctx context.Context, imageURL, outputPath str
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-// isGrokImageURL kiểm tra URL có phải ảnh generated từ Grok
-// CHỈ chấp nhận URL chứa /generated/ từ assets.grok.com — đây là pattern duy nhất cho ảnh Grok tạo
+// isGrokImageURL kiểm tra URL có phải ảnh generated từ Grok theo đúng nguồn ảnh trên trang Grok Imagine.
+// Bắt buộc chấp nhận các pattern thực tế:
+// - https://imagine-public.x.ai/imagine-public/images/....jpg
+// - https://assets.grok.com/users/.../generated/.../image.jpg?cache=1
 func isGrokImageURL(url string) bool {
 	if len(url) < 20 {
 		return false
 	}
 	lower := strings.ToLower(url)
+
+	if strings.HasPrefix(lower, "data:image/") || strings.HasPrefix(lower, "blob:") {
+		return false
+	}
 
 	// Loại bỏ UI assets (avatar, icon, logo, ...)
 	excludes := []string{"favicon", "logo", "avatar", "icon", "sprite", ".svg", "pixel.gif", "analytics", "emoji", "profile"}
@@ -1193,10 +1255,26 @@ func isGrokImageURL(url string) bool {
 		}
 	}
 
-	// CHỈ match URL chứa /generated/ từ các domain Grok
-	// Pattern xác nhận từ log: assets.grok.com/users/<uuid>/generated/<uuid>
-	if strings.Contains(lower, "assets.grok.com") && strings.Contains(lower, "/generated/") {
+	if !strings.Contains(lower, "grok") && !strings.Contains(lower, "x.ai") {
+		return false
+	}
+
+	if strings.Contains(lower, "imagine-public.x.ai/imagine-public/images/") {
 		return true
+	}
+
+	if strings.Contains(lower, "assets.grok.com/users/") && strings.Contains(lower, "/generated/") {
+		return true
+	}
+
+	if strings.Contains(lower, "/generated/") || strings.Contains(lower, "/images/") || strings.Contains(lower, "/uploads/") || strings.Contains(lower, "/media/") || strings.Contains(lower, "/output/") {
+		return true
+	}
+
+	for _, ext := range []string{".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"} {
+		if strings.Contains(lower, ext) {
+			return true
+		}
 	}
 
 	return false

@@ -1,13 +1,13 @@
 {
   "$schema": "https://wails.io/schemas/config.v2.json",
-  "name": "BulkAI",
-  "outputfilename": "BulkAI",
+  "name": "BulkAI-Custom",
+  "outputfilename": "BulkAI_Custom",
   "frontend:install": "npm install",
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "author": {
-    "name": "PhongMOA",
-    "email": "lehuuhuyphong.moa@gmail.com"
+    "name": "ngocan17531",
+    "email": "[EMAIL_ADDRESS]"
   }
 }
