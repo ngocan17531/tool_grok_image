@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"BulkAI/pkg/bridge"
@@ -37,7 +37,7 @@ type App struct {
 	flowCancelFunc context.CancelFunc
 }
 
-// GrokGenerateConfig là config gửi từ frontend cho Grok generation
+// GrokGenerateConfig lÃ  config gá»­i tá»« frontend cho Grok generation
 type GrokGenerateConfig struct {
 	Prompts    []string `json:"prompts"`
 	Ratio      string   `json:"ratio"`
@@ -49,18 +49,18 @@ type GrokGenerateConfig struct {
 	UseImagine bool     `json:"useImagine"`
 }
 
-// GoogleFlowGenerateConfig là config gửi từ frontend cho Google Flow generation
+// GoogleFlowGenerateConfig lÃ  config gá»­i tá»« frontend cho Google Flow generation
 type GoogleFlowGenerateConfig struct {
 	Prompts  []string `json:"prompts"`
 	Output   string   `json:"output"`
 	Album    string   `json:"album"`
 	Download bool     `json:"download"`
 	FlowURL  string   `json:"flowUrl"`
-	Delay    int      `json:"delay"` // Thời gian chờ (giây) sau khi nhận ảnh, trước prompt tiếp theo
+	Delay    int      `json:"delay"` // Thá»i gian chá» (giÃ¢y) sau khi nháº­n áº£nh, trÆ°á»›c prompt tiáº¿p theo
 }
 
 // CurrentVersion is the current version of the application
-const CurrentVersion = "v1.0.4"
+const CurrentVersion = "v1.0.5"
 
 // UpdateInfo struct for auto-update
 type UpdateInfo struct {
@@ -228,7 +228,7 @@ func (a *App) FixAlbumData(outputDir string, albumID string) string {
 	if _, err := readAlbumData(outputDir, albumID); err != nil {
 		return "Error fixing data.json: " + err.Error()
 	}
-	return "Success: data.json đã được tạo/cập nhật cho album " + albumID
+	return "Success: data.json Ä‘Ã£ Ä‘Æ°á»£c táº¡o/cáº­p nháº­t cho album " + albumID
 }
 
 // GalleryFolder represents an album folder
@@ -490,7 +490,7 @@ func (a *App) ExportGalleryReport(outputDir string, albumID string, prefix strin
 
 	// Iterate images
 	row := 2
-	keywordCache := make(map[string]string) // Cache để lưu tags cho từng title
+	keywordCache := make(map[string]string) // Cache Ä‘á»ƒ lÆ°u tags cho tá»«ng title
 
 	for _, img := range album.Images {
 		if img.File == "" {
@@ -506,7 +506,7 @@ func (a *App) ExportGalleryReport(outputDir string, albumID string, prefix strin
 		// 1. Filename
 		f.SetCellValue(sheetName, fmt.Sprintf("A%d", row), img.File)
 
-		// 2. Title — lấy phần Subject từ prompt
+		// 2. Title â€” láº¥y pháº§n Subject tá»« prompt
 		title := extractTitle(img.Prompt, prefix)
 		if len([]rune(title)) > 200 {
 			title = string([]rune(title)[:200])
@@ -516,12 +516,12 @@ func (a *App) ExportGalleryReport(outputDir string, albumID string, prefix strin
 		// 3. Keywords via Gemini
 		keywords := ""
 		if title != "" {
-			// Kiểm tra nếu title này đã được tạo keywords trước đó
+			// Kiá»ƒm tra náº¿u title nÃ y Ä‘Ã£ Ä‘Æ°á»£c táº¡o keywords trÆ°á»›c Ä‘Ã³
 			if cached, ok := keywordCache[title]; ok {
 				keywords = cached
 			} else {
 				keywords = a.getGeminiKeywords(title, geminiKey)
-				// Lưu vào cache để dùng cho ảnh sau có cùng title
+				// LÆ°u vÃ o cache Ä‘á»ƒ dÃ¹ng cho áº£nh sau cÃ³ cÃ¹ng title
 				if keywords != "" {
 					keywordCache[title] = keywords
 				}
@@ -545,7 +545,7 @@ func (a *App) ExportGalleryReport(outputDir string, albumID string, prefix strin
 	return "Success: " + excelPath
 }
 
-// ExportCSV xuất dữ liệu album ra file CSV
+// ExportCSV xuáº¥t dá»¯ liá»‡u album ra file CSV
 func (a *App) ExportCSV(outputDir string, albumID string) string {
 	if albumID == "" || outputDir == "" {
 		return "Error: Missing parameters"
@@ -587,13 +587,13 @@ func (a *App) ExportCSV(outputDir string, albumID string) string {
 	return "Success: " + csvPath
 }
 
-// AlbumTitleInfo chứa thông tin title từ album để frontend dùng tạo keywords
+// AlbumTitleInfo chá»©a thÃ´ng tin title tá»« album Ä‘á»ƒ frontend dÃ¹ng táº¡o keywords
 type AlbumTitleInfo struct {
 	Title string `json:"title"`
-	Count int    `json:"count"` // Số ảnh có cùng title
+	Count int    `json:"count"` // Sá»‘ áº£nh cÃ³ cÃ¹ng title
 }
 
-// GetAlbumTitles trả về danh sách các title duy nhất từ album để frontend tạo keywords
+// GetAlbumTitles tráº£ vá» danh sÃ¡ch cÃ¡c title duy nháº¥t tá»« album Ä‘á»ƒ frontend táº¡o keywords
 func (a *App) GetAlbumTitles(outputDir string, albumID string, prefix string) []AlbumTitleInfo {
 	var titles []AlbumTitleInfo
 	if albumID == "" || outputDir == "" {
@@ -637,7 +637,7 @@ func (a *App) GetAlbumTitles(outputDir string, albumID string, prefix string) []
 	return titles
 }
 
-// ExportGalleryReportWithKeywords xuất báo cáo Excel với keywords đã được tạo sẵn từ frontend
+// ExportGalleryReportWithKeywords xuáº¥t bÃ¡o cÃ¡o Excel vá»›i keywords Ä‘Ã£ Ä‘Æ°á»£c táº¡o sáºµn tá»« frontend
 func (a *App) ExportGalleryReportWithKeywords(outputDir string, albumID string, prefix string, keywordsMap map[string]string) string {
 	if albumID == "" || outputDir == "" {
 		return "Error: Missing parameters"
@@ -678,7 +678,7 @@ func (a *App) ExportGalleryReportWithKeywords(outputDir string, albumID string, 
 		// 1. Filename
 		f.SetCellValue(sheetName, fmt.Sprintf("A%d", row), img.File)
 
-		// 2. Title — lấy phần Subject từ prompt
+		// 2. Title â€” láº¥y pháº§n Subject tá»« prompt
 		fullTitle := extractTitle(img.Prompt, prefix)
 		title := fullTitle
 		if len([]rune(title)) > 200 {
@@ -686,13 +686,13 @@ func (a *App) ExportGalleryReportWithKeywords(outputDir string, albumID string, 
 		}
 		f.SetCellValue(sheetName, fmt.Sprintf("B%d", row), title)
 
-		// 3. Keywords from pre-generated map — lookup bằng fullTitle (chưa truncate) để khớp key từ GetAlbumTitles
+		// 3. Keywords from pre-generated map â€” lookup báº±ng fullTitle (chÆ°a truncate) Ä‘á»ƒ khá»›p key tá»« GetAlbumTitles
 		keywords := ""
 		if fullTitle != "" {
 			if kw, ok := keywordsMap[fullTitle]; ok {
 				keywords = kw
 			} else if kw, ok := keywordsMap[title]; ok {
-				// fallback: thử với title đã truncate
+				// fallback: thá»­ vá»›i title Ä‘Ã£ truncate
 				keywords = kw
 			}
 		}
@@ -714,8 +714,8 @@ func (a *App) ExportGalleryReportWithKeywords(outputDir string, albumID string, 
 	return "Success: " + excelPath
 }
 
-// FixExcelTitles đọc file report xlsx của album, làm sạch lại cột Title (B) bằng extractTitle,
-// rồi ghi đè lại file. Trả về "Success: <path>" hoặc "Error: <msg>".
+// FixExcelTitles Ä‘á»c file report xlsx cá»§a album, lÃ m sáº¡ch láº¡i cá»™t Title (B) báº±ng extractTitle,
+// rá»“i ghi Ä‘Ã¨ láº¡i file. Tráº£ vá» "Success: <path>" hoáº·c "Error: <msg>".
 func (a *App) FixExcelTitles(outputDir string, albumID string, prefix string) string {
 	if albumID == "" || outputDir == "" {
 		return "Error: Missing parameters"
@@ -772,7 +772,7 @@ func (a *App) FixExcelTitles(outputDir string, albumID string, prefix string) st
 	return fmt.Sprintf("Success: %s (fixed %d titles)", excelPath, fixed)
 }
 
-// ExportCSVWithKeywords xuất CSV với cột Keywords đã được tạo sẵn
+// ExportCSVWithKeywords xuáº¥t CSV vá»›i cá»™t Keywords Ä‘Ã£ Ä‘Æ°á»£c táº¡o sáºµn
 func (a *App) ExportCSVWithKeywords(outputDir string, albumID string, prefix string, keywordsMap map[string]string) string {
 	if albumID == "" || outputDir == "" {
 		return "Error: Missing parameters"
@@ -809,7 +809,7 @@ func (a *App) ExportCSVWithKeywords(outputDir string, albumID string, prefix str
 			continue
 		}
 
-		// Title — lấy phần Subject từ prompt
+		// Title â€” láº¥y pháº§n Subject tá»« prompt
 		title := extractTitle(img.Prompt, prefix)
 
 		keywords := ""
@@ -823,7 +823,7 @@ func (a *App) ExportCSVWithKeywords(outputDir string, albumID string, prefix str
 	return "Success: " + csvPath
 }
 
-// DeleteAlbum xóa toàn bộ album (thư mục + dữ liệu)
+// DeleteAlbum xÃ³a toÃ n bá»™ album (thÆ° má»¥c + dá»¯ liá»‡u)
 func (a *App) DeleteAlbum(outputDir string, albumID string) string {
 	if albumID == "" || outputDir == "" {
 		return "Error: Missing parameters"
@@ -838,7 +838,7 @@ func (a *App) DeleteAlbum(outputDir string, albumID string) string {
 		return "Error deleting album: " + err.Error()
 	}
 
-	return "Success: Đã xóa album " + albumID
+	return "Success: ÄÃ£ xÃ³a album " + albumID
 }
 func (a *App) getGeminiKeywords(title string, key string) string {
 	apiUrl := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=%s", key)
@@ -889,13 +889,13 @@ Rules:
 	if len(result.Candidates) > 0 && len(result.Candidates[0].Content.Parts) > 0 {
 		text := result.Candidates[0].Content.Parts[0].Text
 
-		// 1. Tìm dấu hai chấm cuối cùng - Đây là vị trí phổ biến nhất mà AI dùng để phân tách lời dẫn và kết quả
+		// 1. TÃ¬m dáº¥u hai cháº¥m cuá»‘i cÃ¹ng - ÄÃ¢y lÃ  vá»‹ trÃ­ phá»• biáº¿n nháº¥t mÃ  AI dÃ¹ng Ä‘á»ƒ phÃ¢n tÃ¡ch lá»i dáº«n vÃ  káº¿t quáº£
 		lastColon := strings.LastIndex(text, ":")
 		var cleanText string
 		if lastColon != -1 {
 			cleanText = text[lastColon+1:]
 		} else {
-			// 2. Nếu không có dấu hai chấm, tìm vị trí có vẻ là bắt đầu danh sách (dấu phẩy đầu tiên)
+			// 2. Náº¿u khÃ´ng cÃ³ dáº¥u hai cháº¥m, tÃ¬m vá»‹ trÃ­ cÃ³ váº» lÃ  báº¯t Ä‘áº§u danh sÃ¡ch (dáº¥u pháº©y Ä‘áº§u tiÃªn)
 			firstComma := strings.Index(text, ",")
 			if firstComma != -1 {
 				sub := text[:firstComma]
@@ -910,28 +910,28 @@ Rules:
 			}
 		}
 
-		// 3. Tách lọc kỹ lại từng tag
+		// 3. TÃ¡ch lá»c ká»¹ láº¡i tá»«ng tag
 		lines := strings.Split(cleanText, "\n")
 		var allTags []string
 		for _, line := range lines {
 			line = strings.TrimSpace(line)
-			// Bỏ qua các dòng lời dẫn nếu chúng vẫn lọt qua (chứa từ tiếng Việt hoặc quá dài không phải tag)
-			if line == "" || strings.Contains(line, "Chắc chắn") || strings.Contains(line, "đây là") {
+			// Bá» qua cÃ¡c dÃ²ng lá»i dáº«n náº¿u chÃºng váº«n lá»t qua (chá»©a tá»« tiáº¿ng Viá»‡t hoáº·c quÃ¡ dÃ i khÃ´ng pháº£i tag)
+			if line == "" || strings.Contains(line, "Cháº¯c cháº¯n") || strings.Contains(line, "Ä‘Ã¢y lÃ ") {
 				continue
 			}
 
 			parts := strings.Split(line, ",")
 			for _, p := range parts {
 				p = strings.TrimSpace(p)
-				p = strings.Trim(p, ".! ") // Xóa dấu chấm, than, khoảng trắng dư
-				// Chỉ lấy từ đơn (không chứa khoảng trắng) và không rỗng
+				p = strings.Trim(p, ".! ") // XÃ³a dáº¥u cháº¥m, than, khoáº£ng tráº¯ng dÆ°
+				// Chá»‰ láº¥y tá»« Ä‘Æ¡n (khÃ´ng chá»©a khoáº£ng tráº¯ng) vÃ  khÃ´ng rá»—ng
 				if p != "" && !strings.Contains(p, " ") {
 					allTags = append(allTags, p)
 				}
 			}
 		}
 
-		// Đảm bảo chỉ lấy 40 tags
+		// Äáº£m báº£o chá»‰ láº¥y 40 tags
 		if len(allTags) > 40 {
 			allTags = allTags[:40]
 		}
@@ -945,26 +945,26 @@ Rules:
 // UpscaleImage performs 4x upscaling on a given image file
 func (a *App) UpscaleImage(outputDir string, folderName string, thumbName string) string {
 	if outputDir == "" || folderName == "" || thumbName == "" {
-		return "Lỗi: Thiếu tham số đường dẫn."
+		return "Lá»—i: Thiáº¿u tham sá»‘ Ä‘Æ°á»ng dáº«n."
 	}
 
-	// 1. Tìm đường dẫn file ảnh gốc thực tế
+	// 1. TÃ¬m Ä‘Æ°á»ng dáº«n file áº£nh gá»‘c thá»±c táº¿
 	base := strings.TrimSuffix(thumbName, filepath.Ext(thumbName))
 	imagePath := filepath.Join(outputDir, folderName, "images", base+".png")
 	if _, err := os.Stat(imagePath); os.IsNotExist(err) {
 		imagePath = filepath.Join(outputDir, folderName, "images", base+".jpg")
 		if _, err := os.Stat(imagePath); os.IsNotExist(err) {
-			return "Lỗi: Không tìm thấy file ảnh gốc (đã kiểm tra .png và .jpg)."
+			return "Lá»—i: KhÃ´ng tÃ¬m tháº¥y file áº£nh gá»‘c (Ä‘Ã£ kiá»ƒm tra .png vÃ  .jpg)."
 		}
 	}
 
-	// 2. Tạo thư mục upscaled nếu chưa có
+	// 2. Táº¡o thÆ° má»¥c upscaled náº¿u chÆ°a cÃ³
 	upscaledDir := filepath.Join(outputDir, folderName, "images", "upscaled")
 	if err := os.MkdirAll(upscaledDir, 0755); err != nil {
-		return "Lỗi: Không thể tạo thư mục upscaled: " + err.Error()
+		return "Lá»—i: KhÃ´ng thá»ƒ táº¡o thÆ° má»¥c upscaled: " + err.Error()
 	}
 
-	// 3. Định nghĩa thư mục chứa tool (bin/realesrgan/)
+	// 3. Äá»‹nh nghÄ©a thÆ° má»¥c chá»©a tool (bin/realesrgan/)
 	executable, _ := os.Executable()
 	appDir := filepath.Dir(executable)
 	binPath := filepath.Join(appDir, "bin", "realesrgan", "realesrgan-ncnn-vulkan.exe")
@@ -976,11 +976,11 @@ func (a *App) UpscaleImage(outputDir string, folderName string, thumbName string
 		return "TOOL_NOT_FOUND"
 	}
 
-	// 4. Tạo đường dẫn file đầu ra (giữ nguyên tên gốc, để vào folder upscaled)
+	// 4. Táº¡o Ä‘Æ°á»ng dáº«n file Ä‘áº§u ra (giá»¯ nguyÃªn tÃªn gá»‘c, Ä‘á»ƒ vÃ o folder upscaled)
 	fileName := filepath.Base(imagePath)
 	outputPath := filepath.Join(upscaledDir, fileName)
 
-	// 5. Thực thi lệnh (VRAM 200 cho ổn định)
+	// 5. Thá»±c thi lá»‡nh (VRAM 200 cho á»•n Ä‘á»‹nh)
 	cmd := exec.Command(binPath, "-i", imagePath, "-o", outputPath, "-s", "4", "-n", "realesrgan-x4plus", "-t", "200")
 	cmd.Dir = filepath.Dir(binPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
@@ -991,7 +991,7 @@ func (a *App) UpscaleImage(outputDir string, folderName string, thumbName string
 	fmt.Printf("Starting upscale: %s -> %s\n", imagePath, outputPath)
 	if err := cmd.Run(); err != nil {
 		fmt.Printf("Upscale error: %v, Stderr: %s\n", err, stderr.String())
-		return fmt.Sprintf("Lỗi thực thi (VRAM có thể bị đầy): %v. \nChi tiết: %s", err, stderr.String())
+		return fmt.Sprintf("Lá»—i thá»±c thi (VRAM cÃ³ thá»ƒ bá»‹ Ä‘áº§y): %v. \nChi tiáº¿t: %s", err, stderr.String())
 	}
 
 	return "SUCCESS:" + outputPath
@@ -1000,22 +1000,22 @@ func (a *App) UpscaleImage(outputDir string, folderName string, thumbName string
 // UpscaleFolder performs 4x upscaling for all images in the specified folder
 func (a *App) UpscaleFolder(outputDir string, folderName string) string {
 	if outputDir == "" || folderName == "" {
-		return "Lỗi: Thiếu tham số đường dẫn."
+		return "Lá»—i: Thiáº¿u tham sá»‘ Ä‘Æ°á»ng dáº«n."
 	}
 
 	imagesDir := filepath.Join(outputDir, folderName, "images")
 	entries, err := os.ReadDir(imagesDir)
 	if err != nil {
-		return "Lỗi đọc thư mục: " + err.Error()
+		return "Lá»—i Ä‘á»c thÆ° má»¥c: " + err.Error()
 	}
 
-	// 1. Tạo thư mục upscaled nếu chưa có
+	// 1. Táº¡o thÆ° má»¥c upscaled náº¿u chÆ°a cÃ³
 	upscaledDir := filepath.Join(imagesDir, "upscaled")
 	if err := os.MkdirAll(upscaledDir, 0755); err != nil {
-		return "Lỗi: Không thể tạo thư mục upscaled: " + err.Error()
+		return "Lá»—i: KhÃ´ng thá»ƒ táº¡o thÆ° má»¥c upscaled: " + err.Error()
 	}
 
-	// 2. Tìm các file gốc hợp lệ
+	// 2. TÃ¬m cÃ¡c file gá»‘c há»£p lá»‡
 	var imageFiles []string
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -1029,10 +1029,10 @@ func (a *App) UpscaleFolder(outputDir string, folderName string) string {
 	}
 
 	if len(imageFiles) == 0 {
-		return "Lỗi: Không tìm thấy ảnh hợp lệ để upscale."
+		return "Lá»—i: KhÃ´ng tÃ¬m tháº¥y áº£nh há»£p lá»‡ Ä‘á»ƒ upscale."
 	}
 
-	// 3. Kiểm tra tool
+	// 3. Kiá»ƒm tra tool
 	executable, _ := os.Executable()
 	appDir := filepath.Dir(executable)
 	binPath := filepath.Join(appDir, "bin", "realesrgan", "realesrgan-ncnn-vulkan.exe")
@@ -1044,7 +1044,7 @@ func (a *App) UpscaleFolder(outputDir string, folderName string) string {
 		return "TOOL_NOT_FOUND"
 	}
 
-	// 4. Xử lý từng file
+	// 4. Xá»­ lÃ½ tá»«ng file
 	count := 0
 	total := len(imageFiles)
 	for i, name := range imageFiles {
@@ -1067,7 +1067,7 @@ func (a *App) UpscaleFolder(outputDir string, folderName string) string {
 		}
 	}
 
-	return fmt.Sprintf("SUCCESS: Đã hoàn thành xử lý %d/%d ảnh. \nẢnh mới nằm trong thư mục: images/upscaled", count, total)
+	return fmt.Sprintf("SUCCESS: ÄÃ£ hoÃ n thÃ nh xá»­ lÃ½ %d/%d áº£nh. \náº¢nh má»›i náº±m trong thÆ° má»¥c: images/upscaled", count, total)
 }
 
 // SelectDirectory opens a directory dialog and returns the selected path
@@ -1080,7 +1080,7 @@ func (a *App) SelectDirectory() string {
 
 	fmt.Println("Opening directory dialog...")
 	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "Chọn thư mục",
+		Title: "Chá»n thÆ° má»¥c",
 	})
 	if err != nil {
 		fmt.Printf("Error selecting directory: %v\n", err)
@@ -1095,11 +1095,11 @@ func (a *App) Greet(name string) string {
 	return fmt.Sprintf("Hello %s, It's show time!", name)
 }
 
-// ─────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Bridge Functions (ChatGPT Extension WebSocket)
-// ─────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// StartBridge khởi động WebSocket server cho extension
+// StartBridge khá»Ÿi Ä‘á»™ng WebSocket server cho extension
 func (a *App) StartBridge() string {
 	if a.bridge != nil && a.bridge.IsRunning() {
 		return "already_running"
@@ -1107,7 +1107,7 @@ func (a *App) StartBridge() string {
 
 	a.bridge = bridge.New()
 
-	// Callback khi status thay đổi → emit event tới frontend
+	// Callback khi status thay Ä‘á»•i â†’ emit event tá»›i frontend
 	a.bridge.SetOnStatusChange(func(running bool, connected bool) {
 		runtime.EventsEmit(a.ctx, "bridge_status", map[string]interface{}{
 			"running":   running,
@@ -1115,7 +1115,7 @@ func (a *App) StartBridge() string {
 		})
 	})
 
-	// Callback khi nhận response từ ChatGPT
+	// Callback khi nháº­n response tá»« ChatGPT
 	a.bridge.SetOnResponse(func(id string, content string, status string) {
 		runtime.EventsEmit(a.ctx, "bridge_response", map[string]interface{}{
 			"id":      id,
@@ -1132,7 +1132,7 @@ func (a *App) StartBridge() string {
 	return "ok"
 }
 
-// StopBridge dừng WebSocket server
+// StopBridge dá»«ng WebSocket server
 func (a *App) StopBridge() string {
 	if a.bridge != nil {
 		a.bridge.Stop()
@@ -1141,7 +1141,7 @@ func (a *App) StopBridge() string {
 	return "ok"
 }
 
-// GetBridgeStatus trả về trạng thái hiện tại của Bridge
+// GetBridgeStatus tráº£ vá» tráº¡ng thÃ¡i hiá»‡n táº¡i cá»§a Bridge
 func (a *App) GetBridgeStatus() map[string]interface{} {
 	if a.bridge == nil {
 		return map[string]interface{}{
@@ -1155,13 +1155,13 @@ func (a *App) GetBridgeStatus() map[string]interface{} {
 	}
 }
 
-// SendBridgePrompt gửi prompt tới extension qua Bridge
+// SendBridgePrompt gá»­i prompt tá»›i extension qua Bridge
 func (a *App) SendBridgePrompt(id string, content string) string {
 	if a.bridge == nil || !a.bridge.IsRunning() {
-		return "error: bridge chưa chạy"
+		return "error: bridge chÆ°a cháº¡y"
 	}
 	if !a.bridge.IsExtensionConnected() {
-		return "error: extension chưa kết nối"
+		return "error: extension chÆ°a káº¿t ná»‘i"
 	}
 	if err := a.bridge.SendPrompt(id, content); err != nil {
 		return "error: " + err.Error()
@@ -1169,11 +1169,11 @@ func (a *App) SendBridgePrompt(id string, content string) string {
 	return "ok"
 }
 
-// ─────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Grok Chrome Functions
-// ─────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// StartGrokChrome mở Chrome và navigate tới grok.com
+// StartGrokChrome má»Ÿ Chrome vÃ  navigate tá»›i grok.com
 func (a *App) StartGrokChrome() string {
 	g := grok.GetInstance()
 	if g.IsRunning() {
@@ -1186,14 +1186,14 @@ func (a *App) StartGrokChrome() string {
 	return "Started"
 }
 
-// StopGrokChrome đóng Chrome
+// StopGrokChrome Ä‘Ã³ng Chrome
 func (a *App) StopGrokChrome() string {
 	grok.GetInstance().Stop()
 	runtime.EventsEmit(a.ctx, "grok_chrome_status", "stopped")
 	return "Stopped"
 }
 
-// GetGrokChromeStatus trả về trạng thái Chrome hiện tại
+// GetGrokChromeStatus tráº£ vá» tráº¡ng thÃ¡i Chrome hiá»‡n táº¡i
 func (a *App) GetGrokChromeStatus() string {
 	if grok.GetInstance().IsRunning() {
 		return "running"
@@ -1201,18 +1201,18 @@ func (a *App) GetGrokChromeStatus() string {
 	return "stopped"
 }
 
-// GenerateGrokImages bắt đầu quá trình tạo ảnh bằng Grok Chrome
+// GenerateGrokImages báº¯t Ä‘áº§u quÃ¡ trÃ¬nh táº¡o áº£nh báº±ng Grok Chrome
 func (a *App) GenerateGrokImages(cfg GrokGenerateConfig) string {
 	g := grok.GetInstance()
 	if !g.IsRunning() {
-		return "Error: Chrome chưa được khởi động. Vui lòng nhấn 'Bật Chrome' trước."
+		return "Error: Chrome chÆ°a Ä‘Æ°á»£c khá»Ÿi Ä‘á»™ng. Vui lÃ²ng nháº¥n 'Báº­t Chrome' trÆ°á»›c."
 	}
 
 	if cfg.Output == "" {
-		return "Error: Thiếu thư mục output"
+		return "Error: Thiáº¿u thÆ° má»¥c output"
 	}
 	if len(cfg.Prompts) == 0 {
-		return "Error: Không có prompt nào"
+		return "Error: KhÃ´ng cÃ³ prompt nÃ o"
 	}
 	if cfg.Album == "" {
 		cfg.Album = time.Now().UTC().Format("20060102_150405")
@@ -1257,13 +1257,13 @@ func (a *App) GenerateGrokImages(cfg GrokGenerateConfig) string {
 			return
 		}
 
-		log.Printf("Grok: Hoàn thành, tạo được %d ảnh", len(images))
+		log.Printf("Grok: HoÃ n thÃ nh, táº¡o Ä‘Æ°á»£c %d áº£nh", len(images))
 
-		// ── Tạo data.json (giống flow Discord) ──────────────────────────────
+		// â”€â”€ Táº¡o data.json (giá»‘ng flow Discord) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 		albumDir := filepath.Join(cfg.Output, cfg.Album)
 		_ = os.MkdirAll(albumDir, 0755)
 
-		// Chuyển GrokImage sang bulkai.Image và tìm các prompt đã hoàn thành
+		// Chuyá»ƒn GrokImage sang bulkai.Image vÃ  tÃ¬m cÃ¡c prompt Ä‘Ã£ hoÃ n thÃ nh
 		var albumImages []*bulkai.Image
 		finishedMap := make(map[int]bool)
 		for _, img := range images {
@@ -1272,7 +1272,7 @@ func (a *App) GenerateGrokImages(cfg GrokGenerateConfig) string {
 				Prompt: img.Prompt,
 				File:   img.File,
 			})
-			// Đánh dấu prompt index đã hoàn thành
+			// ÄÃ¡nh dáº¥u prompt index Ä‘Ã£ hoÃ n thÃ nh
 			for idx, p := range cfg.Prompts {
 				if p == img.Prompt {
 					finishedMap[idx] = true
@@ -1306,9 +1306,9 @@ func (a *App) GenerateGrokImages(cfg GrokGenerateConfig) string {
 		}
 
 		if err := bulkai.SaveAlbum(albumDir, album, true, false); err != nil {
-			log.Printf("Grok: Lỗi khi tạo data.json: %v", err)
+			log.Printf("Grok: Lá»—i khi táº¡o data.json: %v", err)
 		} else {
-			log.Printf("Grok: Đã tạo data.json tại %s", albumDir)
+			log.Printf("Grok: ÄÃ£ táº¡o data.json táº¡i %s", albumDir)
 		}
 
 		runtime.EventsEmit(a.ctx, "generation_finished", cfg.Album)
@@ -1317,14 +1317,14 @@ func (a *App) GenerateGrokImages(cfg GrokGenerateConfig) string {
 	return "Started"
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Google Flow Chrome Integration
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// StartGoogleFlowChrome mở Chrome và navigate tới Google Flow
+// StartGoogleFlowChrome má»Ÿ Chrome vÃ  navigate tá»›i Google Flow
 func (a *App) StartGoogleFlowChrome(flowURL string) string {
-	// Google Flow giờ dùng Bridge WebSocket + Chrome Extension
-	// Không cần mở Chrome riêng nữa — dùng Chrome thường của user
+	// Google Flow giá» dÃ¹ng Bridge WebSocket + Chrome Extension
+	// KhÃ´ng cáº§n má»Ÿ Chrome riÃªng ná»¯a â€” dÃ¹ng Chrome thÆ°á»ng cá»§a user
 	if a.bridge == nil {
 		a.bridge = bridge.New()
 		a.bridge.SetOnStatusChange(func(running bool, connected bool) {
@@ -1332,7 +1332,7 @@ func (a *App) StartGoogleFlowChrome(flowURL string) string {
 				"running":   running,
 				"connected": connected,
 			})
-			// Cập nhật Google Flow status dựa trên bridge
+			// Cáº­p nháº­t Google Flow status dá»±a trÃªn bridge
 			if connected {
 				runtime.EventsEmit(a.ctx, "gflow_chrome_status", "running")
 			} else if running {
@@ -1369,11 +1369,11 @@ func (a *App) StartGoogleFlowChrome(flowURL string) string {
 	a.bridge.StartHeartbeat()
 
 	runtime.EventsEmit(a.ctx, "gflow_chrome_status", "waiting")
-	log.Println("GoogleFlow: Bridge WebSocket server đã chạy trên port 8765. Chờ Chrome Extension kết nối...")
+	log.Println("GoogleFlow: Bridge WebSocket server Ä‘Ã£ cháº¡y trÃªn port 8765. Chá» Chrome Extension káº¿t ná»‘i...")
 	return "Started"
 }
 
-// StopGoogleFlowChrome đóng Bridge
+// StopGoogleFlowChrome Ä‘Ã³ng Bridge
 func (a *App) StopGoogleFlowChrome() string {
 	if a.bridge != nil {
 		a.bridge.Stop()
@@ -1382,7 +1382,7 @@ func (a *App) StopGoogleFlowChrome() string {
 	return "Stopped"
 }
 
-// GetGoogleFlowChromeStatus trả về trạng thái
+// GetGoogleFlowChromeStatus tráº£ vá» tráº¡ng thÃ¡i
 func (a *App) GetGoogleFlowChromeStatus() string {
 	if a.bridge != nil && a.bridge.IsRunning() {
 		if a.bridge.IsExtensionConnected() {
@@ -1393,19 +1393,19 @@ func (a *App) GetGoogleFlowChromeStatus() string {
 	return "stopped"
 }
 
-// GenerateGoogleFlowImages tạo ảnh qua Bridge → Chrome Extension
+// GenerateGoogleFlowImages táº¡o áº£nh qua Bridge â†’ Chrome Extension
 func (a *App) GenerateGoogleFlowImages(cfg GoogleFlowGenerateConfig) string {
 	if a.bridge == nil || !a.bridge.IsRunning() {
-		return "Error: Bridge chưa chạy. Vui lòng nhấn 'Bật Bridge' trước."
+		return "Error: Bridge chÆ°a cháº¡y. Vui lÃ²ng nháº¥n 'Báº­t Bridge' trÆ°á»›c."
 	}
 	if !a.bridge.IsExtensionConnected() {
-		return "Error: Chrome Extension chưa kết nối. Vui lòng cài extension và mở labs.google."
+		return "Error: Chrome Extension chÆ°a káº¿t ná»‘i. Vui lÃ²ng cÃ i extension vÃ  má»Ÿ labs.google."
 	}
 	if cfg.Output == "" {
-		return "Error: Thiếu thư mục output"
+		return "Error: Thiáº¿u thÆ° má»¥c output"
 	}
 	if len(cfg.Prompts) == 0 {
-		return "Error: Không có prompt nào"
+		return "Error: KhÃ´ng cÃ³ prompt nÃ o"
 	}
 	if cfg.Album == "" {
 		cfg.Album = time.Now().UTC().Format("20060102_150405")
@@ -1439,7 +1439,7 @@ func (a *App) GenerateGoogleFlowImages(cfg GoogleFlowGenerateConfig) string {
 		finishedMap := make(map[int]bool)
 		stopped := false
 
-		// Helper: save data.json (gọi sau mỗi prompt)
+		// Helper: save data.json (gá»i sau má»—i prompt)
 		saveDataJSON := func(status string) {
 			_ = os.MkdirAll(albumDir, 0755)
 			var finished []int
@@ -1463,7 +1463,7 @@ func (a *App) GenerateGoogleFlowImages(cfg GoogleFlowGenerateConfig) string {
 				Finished:   finished,
 			}
 			if err := bulkai.SaveAlbum(albumDir, album, true, false); err != nil {
-				log.Printf("GoogleFlow: Lỗi khi tạo data.json: %v", err)
+				log.Printf("GoogleFlow: Lá»—i khi táº¡o data.json: %v", err)
 			}
 		}
 
@@ -1471,9 +1471,9 @@ func (a *App) GenerateGoogleFlowImages(cfg GoogleFlowGenerateConfig) string {
 			// Check cancel
 			select {
 			case <-flowCtx.Done():
-				log.Printf("GoogleFlow: Đã dừng bởi user tại prompt %d", i)
+				log.Printf("GoogleFlow: ÄÃ£ dá»«ng bá»Ÿi user táº¡i prompt %d", i)
 				runtime.EventsEmit(a.ctx, "gflow_log", map[string]interface{}{
-					"msg":  "⏹️ Đã dừng bởi người dùng",
+					"msg":  "â¹ï¸ ÄÃ£ dá»«ng bá»Ÿi ngÆ°á»i dÃ¹ng",
 					"type": "warning",
 				})
 				stopped = true
@@ -1487,32 +1487,32 @@ func (a *App) GenerateGoogleFlowImages(cfg GoogleFlowGenerateConfig) string {
 				Percentage: float32(i) * 100.0 / float32(total),
 			})
 			runtime.EventsEmit(a.ctx, "gflow_log", map[string]interface{}{
-				"msg":  fmt.Sprintf("[%d/%d] ⌨️ Gửi prompt: %s", i+1, total, prompt[:min(len(prompt), 60)]),
+				"msg":  fmt.Sprintf("[%d/%d] âŒ¨ï¸ Gá»­i prompt: %s", i+1, total, prompt[:min(len(prompt), 60)]),
 				"type": "info",
 			})
 
-			// Gửi prompt qua Bridge
+			// Gá»­i prompt qua Bridge
 			if err := a.bridge.SendFlowPrompt(promptID, prompt, flowURL); err != nil {
-				log.Printf("GoogleFlow: Lỗi gửi prompt %d: %v", i, err)
+				log.Printf("GoogleFlow: Lá»—i gá»­i prompt %d: %v", i, err)
 				runtime.EventsEmit(a.ctx, "gflow_log", map[string]interface{}{
-					"msg":  fmt.Sprintf("[%d/%d] ❌ Lỗi gửi: %v", i+1, total, err),
+					"msg":  fmt.Sprintf("[%d/%d] âŒ Lá»—i gá»­i: %v", i+1, total, err),
 					"type": "error",
 				})
 				continue
 			}
 
-			// Chờ kết quả (5 phút timeout mỗi prompt)
+			// Chá» káº¿t quáº£ (5 phÃºt timeout má»—i prompt)
 			result, err := a.bridge.WaitForFlowResultWithContext(flowCtx, 5*time.Minute)
 			if err != nil {
-				log.Printf("GoogleFlow: Lỗi prompt %d: %v", i, err)
+				log.Printf("GoogleFlow: Lá»—i prompt %d: %v", i, err)
 				runtime.EventsEmit(a.ctx, "gflow_log", map[string]interface{}{
-					"msg":  fmt.Sprintf("[%d/%d] ❌ Lỗi: %v", i+1, total, err),
+					"msg":  fmt.Sprintf("[%d/%d] âŒ Lá»—i: %v", i+1, total, err),
 					"type": "error",
 				})
 				continue
 			}
 
-			// Lưu ảnh
+			// LÆ°u áº£nh
 			for j, img := range result.Images {
 				fileName := fmt.Sprintf("gflow_%s_%05d_%02d.png",
 					sanitizeFilename(prompt, 30), i, j)
@@ -1539,18 +1539,18 @@ func (a *App) GenerateGoogleFlowImages(cfg GoogleFlowGenerateConfig) string {
 					if err == nil && len(data) > 0 {
 						savePath := filepath.Join(imgDir, fileName)
 						if err := os.WriteFile(savePath, data, 0644); err != nil {
-							log.Printf("GoogleFlow: Lỗi lưu ảnh: %v", err)
+							log.Printf("GoogleFlow: Lá»—i lÆ°u áº£nh: %v", err)
 						} else {
-							log.Printf("GoogleFlow: 💾 Đã lưu: %s (%d KB)", fileName, len(data)/1024)
+							log.Printf("GoogleFlow: ðŸ’¾ ÄÃ£ lÆ°u: %s (%d KB)", fileName, len(data)/1024)
 
-							// Tạo thumbnail trong _thumbnails
+							// Táº¡o thumbnail trong _thumbnails
 							thumbName := strings.TrimSuffix(fileName, filepath.Ext(fileName)) + ".jpg"
 							thumbPath := filepath.Join(thumbDir, thumbName)
 							if err := imgPkg.Resize(4, savePath, thumbPath); err != nil {
-								log.Printf("GoogleFlow: Lỗi tạo thumbnail (%v), ghi trực tiếp...", err)
+								log.Printf("GoogleFlow: Lá»—i táº¡o thumbnail (%v), ghi trá»±c tiáº¿p...", err)
 								_ = os.WriteFile(thumbPath, data, 0644)
 							} else {
-								log.Printf("GoogleFlow: 🖼️ Đã tạo thumbnail: %s", thumbName)
+								log.Printf("GoogleFlow: ðŸ–¼ï¸ ÄÃ£ táº¡o thumbnail: %s", thumbName)
 							}
 						}
 					}
@@ -1561,21 +1561,21 @@ func (a *App) GenerateGoogleFlowImages(cfg GoogleFlowGenerateConfig) string {
 
 			finishedMap[i] = true
 			runtime.EventsEmit(a.ctx, "gflow_log", map[string]interface{}{
-				"msg":  fmt.Sprintf("[%d/%d] ✅ Xong — %d ảnh", i+1, total, len(result.Images)),
+				"msg":  fmt.Sprintf("[%d/%d] âœ… Xong â€” %d áº£nh", i+1, total, len(result.Images)),
 				"type": "info",
 			})
 
-			// Save data.json sau mỗi prompt (realtime)
+			// Save data.json sau má»—i prompt (realtime)
 			saveDataJSON("running")
 
-			// Chờ giữa các prompt
+			// Chá» giá»¯a cÃ¡c prompt
 			if i < total-1 {
 				delaySec := cfg.Delay
 				if delaySec <= 0 {
 					delaySec = 3
 				}
 				runtime.EventsEmit(a.ctx, "gflow_log", map[string]interface{}{
-					"msg":  fmt.Sprintf("⏳ Chờ %d giây trước prompt tiếp theo...", delaySec),
+					"msg":  fmt.Sprintf("â³ Chá» %d giÃ¢y trÆ°á»›c prompt tiáº¿p theo...", delaySec),
 					"type": "info",
 				})
 				select {
@@ -1588,7 +1588,7 @@ func (a *App) GenerateGoogleFlowImages(cfg GoogleFlowGenerateConfig) string {
 		}
 
 	done:
-		log.Printf("GoogleFlow: Hoàn thành, tạo được %d ảnh", len(albumImages))
+		log.Printf("GoogleFlow: HoÃ n thÃ nh, táº¡o Ä‘Æ°á»£c %d áº£nh", len(albumImages))
 
 		// Final data.json
 		finalStatus := "finished"
@@ -1598,7 +1598,7 @@ func (a *App) GenerateGoogleFlowImages(cfg GoogleFlowGenerateConfig) string {
 			finalStatus = "partially finished"
 		}
 		saveDataJSON(finalStatus)
-		log.Printf("GoogleFlow: Đã tạo data.json tại %s", albumDir)
+		log.Printf("GoogleFlow: ÄÃ£ táº¡o data.json táº¡i %s", albumDir)
 
 		runtime.EventsEmit(a.ctx, "generation_finished", cfg.Album)
 	}()
@@ -1606,19 +1606,19 @@ func (a *App) GenerateGoogleFlowImages(cfg GoogleFlowGenerateConfig) string {
 	return "Started"
 }
 
-// StopGoogleFlowGeneration dừng quá trình tạo ảnh Google Flow
+// StopGoogleFlowGeneration dá»«ng quÃ¡ trÃ¬nh táº¡o áº£nh Google Flow
 func (a *App) StopGoogleFlowGeneration() string {
 	if a.flowCancelFunc != nil {
 		a.flowCancelFunc()
-		log.Println("GoogleFlow: Đã gửi tín hiệu dừng")
+		log.Println("GoogleFlow: ÄÃ£ gá»­i tÃ­n hiá»‡u dá»«ng")
 		return "Stopped"
 	}
 	return "Not running"
 }
 
-// sanitizeFilename tạo tên file an toàn từ prompt
+// sanitizeFilename táº¡o tÃªn file an toÃ n tá»« prompt
 func sanitizeFilename(s string, maxLen int) string {
-	// Chỉ giữ alphanumeric và underscore
+	// Chá»‰ giá»¯ alphanumeric vÃ  underscore
 	result := make([]byte, 0, maxLen)
 	for _, c := range []byte(strings.ToLower(s)) {
 		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
@@ -1839,3 +1839,4 @@ func (a *App) StopWatermarkBatch() {
 		wmCancelFunc()
 	}
 }
+
