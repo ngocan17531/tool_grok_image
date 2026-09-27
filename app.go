@@ -1194,6 +1194,18 @@ func (a *App) SendBridgePrompt(id string, content string) string {
 	return "ok"
 }
 
+// CancelBridgePrompt hủy prompt đang xử lý trên extension
+func (a *App) CancelBridgePrompt() string {
+	if a.bridge == nil || !a.bridge.IsRunning() {
+		return "ok"
+	}
+	if !a.bridge.IsExtensionConnected() {
+		return "ok"
+	}
+	a.bridge.SendCancel()
+	return "ok"
+}
+
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Grok Chrome Functions
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

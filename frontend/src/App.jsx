@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { GenerateImages, FetchSession, CheckSession, Logout, GetAlbumData, GetGalleryFolders, GetGalleryImages, GetGalleryImageList, GetImageFullBase64, DeleteImage, ExportGalleryReport, ExportCSV, DeleteAlbum, SelectDirectory, UpscaleImage, UpscaleFolder, CheckUpdate, ApplyUpdate, StartGrokChrome, StopGrokChrome, GetGrokChromeStatus, GenerateGrokImages, StartGoogleFlowChrome, StopGoogleFlowChrome, GetGoogleFlowChromeStatus, GenerateGoogleFlowImages, StopGoogleFlowGeneration, StartBridge, StopBridge, GetBridgeStatus, SendBridgePrompt, GetAlbumTitles, ExportGalleryReportWithKeywords, ExportCSVWithKeywords, FixExcelTitles, FixAlbumData } from "../wailsjs/go/main/App";
+import { GenerateImages, FetchSession, CheckSession, Logout, GetAlbumData, GetGalleryFolders, GetGalleryImages, GetGalleryImageList, GetImageFullBase64, DeleteImage, ExportGalleryReport, ExportCSV, DeleteAlbum, SelectDirectory, UpscaleImage, UpscaleFolder, CheckUpdate, ApplyUpdate, StartGrokChrome, StopGrokChrome, GetGrokChromeStatus, GenerateGrokImages, StartGoogleFlowChrome, StopGoogleFlowChrome, GetGoogleFlowChromeStatus, GenerateGoogleFlowImages, StopGoogleFlowGeneration, StartBridge, StopBridge, GetBridgeStatus, SendBridgePrompt, CancelBridgePrompt, GetAlbumTitles, ExportGalleryReportWithKeywords, ExportCSVWithKeywords, FixExcelTitles, FixAlbumData } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import { LayoutDashboard, Settings, Image as ImageIcon, Zap, Terminal, ChevronRight, ChevronLeft, ChevronDown, CheckCircle2, Play, UserCircle, Trash2, FolderPlus, CheckSquare, Square, X, ExternalLink, Copy, FileSpreadsheet, Folder, Sparkles, Maximize, Download, FileText, MousePointerClick } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
@@ -469,8 +469,10 @@ Rules:
         const requestId = "kw_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8);
 
         return new Promise((resolve, reject) => {
-            const timeoutId = setTimeout(() => {
+            const timeoutId = setTimeout(async () => {
                 delete bridgePendingRef.current[requestId];
+                // Gửi cancel để reset content.js state trước khi reject
+                try { await CancelBridgePrompt(); } catch (_) {}
                 reject(new Error("Quá thời gian chờ (2 phút)"));
             }, 120000);
 
@@ -627,6 +629,13 @@ Rules:
                 } catch (e) {
                     addLog(`  ✗ Lỗi tạo keywords cho "${t.title}": ${e.message}`, 'error');
                     keywordsMap[t.title] = "";
+                    // Khi lỗi (timeout/BUSY): gửi cancel reset content.js + chờ 2s
+                    try { await CancelBridgePrompt(); } catch (_) {}
+                    await new Promise(r => setTimeout(r, 2000));
+                }
+                // Chờ 3 giây giữa các prompt để ChatGPT xử lý xong
+                if (i < titles.length - 1) {
+                    await new Promise(r => setTimeout(r, 3000));
                 }
             }
 

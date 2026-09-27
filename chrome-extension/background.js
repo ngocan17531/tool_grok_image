@@ -155,6 +155,12 @@ function handleServerMessage(msg) {
       forwardPromptToChatGPT(msg);
       break;
 
+    case 'cancel_prompt':
+      // Frontend yêu cầu hủy prompt đang xử lý
+      console.log('[BulkAI] Cancel prompt request');
+      sendCancelToChatGPT();
+      break;
+
     case 'generate_flow':
       // Google Flow image generation
       console.log('[BulkAI] Nhận flow prompt [' + msg.id + ']');
@@ -164,6 +170,15 @@ function handleServerMessage(msg) {
     default:
       console.log('[BulkAI] Message không xác định:', msg.type);
   }
+}
+
+async function sendCancelToChatGPT() {
+  try {
+    const tabs = await chrome.tabs.query({ url: CHATGPT_URLS });
+    if (tabs.length > 0) {
+      await chrome.tabs.sendMessage(tabs[0].id, { action: 'force_reset' });
+    }
+  } catch (_) {}
 }
 
 // ── Forward ChatGPT prompt ──────────────────────────────────────
@@ -204,10 +219,21 @@ async function forwardPromptToChatGPT(promptData) {
 
     // Kiểm tra content script
     let alive = false;
+    let isBusy = false;
     try {
       const pong = await chrome.tabs.sendMessage(targetTab.id, { action: 'ping' });
       alive = pong && pong.alive;
+      isBusy = pong && pong.isProcessing;
     } catch (_) {}
+
+    // Nếu content script đang BUSY → force reset trước khi gửi prompt mới
+    if (alive && isBusy) {
+      console.log('[BulkAI] Content script đang BUSY, gửi force_reset...');
+      try {
+        await chrome.tabs.sendMessage(targetTab.id, { action: 'force_reset' });
+        await new Promise(r => setTimeout(r, 500));
+      } catch (_) {}
+    }
 
     // Inject nếu chưa có
     if (!alive) {

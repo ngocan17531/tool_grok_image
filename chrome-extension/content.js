@@ -648,6 +648,26 @@
         sendResponse({ received: true });
         break;
 
+      case 'cancel_prompt':
+        // Frontend timeout → hủy prompt đang xử lý, reset state
+        console.log('[BulkAI] Cancel prompt request, resetting state...');
+        stopResponseObserver();
+        isProcessing = false;
+        currentPromptId = null;
+        sendResponse({ cancelled: true });
+        break;
+
+      case 'force_reset':
+        // Force reset toàn bộ state
+        console.log('[BulkAI] Force reset state');
+        stopResponseObserver();
+        isProcessing = false;
+        currentPromptId = null;
+        lastResponseText = '';
+        messageCountBefore = 0;
+        sendResponse({ reset: true });
+        break;
+
       case 'select_model':
         selectModel(message.model);
         sendResponse({ received: true });

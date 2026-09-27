@@ -93,6 +93,22 @@ func (b *Bridge) SendFlowPrompt(id string, prompt string, flowURL string) error 
 	return conn.WriteJSON(msg)
 }
 
+// SendCancel gửi lệnh hủy prompt đang xử lý
+func (b *Bridge) SendCancel() {
+	b.mu.Lock()
+	conn := b.conn
+	b.mu.Unlock()
+
+	if conn == nil {
+		return
+	}
+
+	msg := map[string]interface{}{
+		"type": "cancel_prompt",
+	}
+	conn.WriteJSON(msg)
+}
+
 // WaitForFlowResult chờ kết quả từ Google Flow extension
 func (b *Bridge) WaitForFlowResult(timeout time.Duration) (*FlowResult, error) {
 	b.mu.Lock()
