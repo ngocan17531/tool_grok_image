@@ -333,12 +333,13 @@
         const stopBtn = querySelector(SELECTORS.stopButton);
         const isStopVisible = stopBtn && isElementVisible(stopBtn);
         const textCleared = textarea && textarea.textContent.trim().length === 0;
-        const msgIncreased = getAssistantMessageCount() > messageCountBefore;
+        const mainEl = document.querySelector('main') || document.body;
+        const textGrew = (mainEl.innerText || '').length > pageTextLenBefore + 20;
 
-        if (textCleared || isStopVisible || msgIncreased) {
+        if (textCleared || isStopVisible || textGrew) {
           sent = true;
           textareaWasCleared = textCleared;
-          console.log(`[BulkAI] Prompt sent (attempt ${attempt + 1}): cleared=${textCleared}, stop=${isStopVisible}, newMsg=${msgIncreased}`);
+          console.log(`[BulkAI] Prompt sent (attempt ${attempt + 1}): cleared=${textCleared}, stop=${isStopVisible}, textGrew=${textGrew}`);
           break;
         }
 
@@ -620,8 +621,8 @@
         stopResponseObserver();
         isProcessing = false;
         currentPromptId = null;
-        lastResponseText = '';
-        messageCountBefore = 0;
+        pageTextBefore = '';
+        pageTextLenBefore = 0;
         sendResponse({ reset: true });
         break;
 
