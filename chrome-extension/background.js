@@ -1,27 +1,73 @@
 // ============================================================
-// BulkAI Google Flow Bridge - Background Service Worker
-// Kết nối WebSocket với BulkAI app ↔ Content Script trên labs.google / flow.google.com
+// BulkAI Bridge - Background Service Worker (unified)
+// Handles ChatGPT keyword generation + Google Flow image generation
 // ============================================================
 
-const WS_URL = 'ws://localhost:8765';
+const CONFIG = {
+  WS_URL: 'ws://127.0.0.1:8765',
+  RECONNECT_DELAY: 3000,
+  MAX_RECONNECT: 100,
+  HEARTBEAT_INTERVAL: 10000
+};
+
+const CHATGPT_URLS = ['https://chatgpt.com/*', 'https://chat.openai.com/*'];
+const FLOW_URLS    = ['https://labs.google/*', 'https://flow.google.com/*'];
+
 let ws = null;
 let reconnectTimer = null;
-const RECONNECT_DELAY = 3000;
-const CHATGPT_URLS = ['https://chatgpt.com/*', 'https://chat.openai.com/*'];
+let heartbeatTimer = null;
+let reconnectAttempts = 0;
+let pendingMessages = []; // Buffer khi WS chưa kết nối
+
+// ── Keepalive Alarm (chống MV3 SW bị kill) ─────────────────────
+
+function startKeepalive() {
+  chrome.alarms.create('bulkai_keepalive', { periodInMinutes: 0.4 }); // ~24s
+}
+
+function stopKeepalive() {
+  chrome.alarms.clear('bulkai_keepalive');
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'bulkai_keepalive') {
+    // Ping để giữ SW sống + kiểm tra WS
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      connectWebSocket();
+    }
+  }
+});
 
 // ── WebSocket Connection ────────────────────────────────────────
 
 function connectWebSocket() {
-  if (ws && ws.readyState === WebSocket.OPEN) return;
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+
+  if (reconnectAttempts >= CONFIG.MAX_RECONNECT) {
+    console.log('[BulkAI] Quá số lần reconnect');
+    return;
+  }
 
   try {
-    ws = new WebSocket(WS_URL);
+    console.log('[BulkAI] Đang kết nối WebSocket...');
+    ws = new WebSocket(CONFIG.WS_URL);
 
     ws.onopen = () => {
       console.log('[BulkAI] ✅ Đã kết nối WebSocket tới BulkAI app');
+      reconnectAttempts = 0;
       clearReconnectTimer();
-      // Gửi ping để xác nhận kết nối
-      ws.send(JSON.stringify({ type: 'ping' }));
+      startHeartbeat();
+      startKeepalive();
+
+      // Flush pending messages
+      if (pendingMessages.length > 0) {
+        console.log('[BulkAI] Flush', pendingMessages.length, 'pending messages');
+        const toFlush = [...pendingMessages];
+        pendingMessages = [];
+        for (const msg of toFlush) {
+          try { ws.send(JSON.stringify(msg)); } catch (e) {}
+        }
+      }
     };
 
     ws.onmessage = (event) => {
@@ -34,26 +80,26 @@ function connectWebSocket() {
     };
 
     ws.onclose = () => {
-      console.log('[BulkAI] WebSocket đã đóng, thử kết nối lại...');
+      console.log('[BulkAI] WebSocket đã đóng');
       ws = null;
+      stopHeartbeat();
       scheduleReconnect();
     };
 
-    ws.onerror = (err) => {
+    ws.onerror = () => {
       console.log('[BulkAI] WebSocket error (BulkAI app chưa chạy?)');
-      ws = null;
     };
   } catch (e) {
-    console.error('[BulkAI] Không thể kết nối WebSocket:', e);
+    console.error('[BulkAI] Không thể kết nối:', e);
     scheduleReconnect();
   }
 }
 
 function scheduleReconnect() {
   clearReconnectTimer();
-  reconnectTimer = setTimeout(() => {
-    connectWebSocket();
-  }, RECONNECT_DELAY);
+  reconnectAttempts++;
+  const delay = Math.min(CONFIG.RECONNECT_DELAY * reconnectAttempts, 15000);
+  reconnectTimer = setTimeout(() => connectWebSocket(), delay);
 }
 
 function clearReconnectTimer() {
@@ -63,12 +109,37 @@ function clearReconnectTimer() {
   }
 }
 
+// ── Heartbeat ───────────────────────────────────────────────────
+
+function startHeartbeat() {
+  stopHeartbeat();
+  heartbeatTimer = setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'ping' }));
+    }
+  }, CONFIG.HEARTBEAT_INTERVAL);
+}
+
+function stopHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
+// ── Send to BulkAI app (with buffering) ─────────────────────────
+
 function sendToServer(msg) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(msg));
-  } else {
-    console.warn('[BulkAI] WebSocket chưa kết nối, không gửi được');
+    return;
   }
+
+  // Buffer message + try reconnect
+  console.warn('[BulkAI] WS chưa kết nối — buffer message type=' + msg.type);
+  pendingMessages.push(msg);
+  if (pendingMessages.length > 20) pendingMessages.shift();
+  connectWebSocket();
 }
 
 // ── Handle Messages from BulkAI Server ──────────────────────────
@@ -76,19 +147,18 @@ function sendToServer(msg) {
 function handleServerMessage(msg) {
   switch (msg.type) {
     case 'pong':
-      console.log('[BulkAI] Pong received');
       break;
 
     case 'prompt':
-      // ChatGPT keyword generation prompt từ BulkAI app
+      // ChatGPT keyword generation
       console.log('[BulkAI] Nhận prompt [' + msg.id + ']: ' + (msg.content || '').substring(0, 60) + '...');
       forwardPromptToChatGPT(msg);
       break;
 
     case 'generate_flow':
-      // Server gửi prompt để generate ảnh trên Google Flow
-      console.log('[BulkAI] Nhận lệnh generate_flow:', msg.prompt?.substring(0, 50));
-      forwardToContentScript(msg);
+      // Google Flow image generation
+      console.log('[BulkAI] Nhận flow prompt [' + msg.id + ']');
+      forwardToFlowTab(msg);
       break;
 
     default:
@@ -96,47 +166,7 @@ function handleServerMessage(msg) {
   }
 }
 
-// ── Forward to Content Script ───────────────────────────────────
-
-function forwardToContentScript(msg) {
-  // Tìm tab Google Flow đang mở (hỗ trợ cả labs.google VÀ flow.google.com)
-  const FLOW_URL_PATTERNS = [
-    'https://labs.google/*',
-    'https://flow.google.com/*'
-  ];
-
-  // Query tất cả tab phù hợp với một trong hai pattern
-  chrome.tabs.query({ url: FLOW_URL_PATTERNS }, (tabs) => {
-    if (tabs.length === 0) {
-      console.warn('[BulkAI] Không tìm thấy tab Google Flow nào đang mở!');
-      sendToServer({
-        type: 'flow_error',
-        id: msg.id,
-        error: 'Không tìm thấy tab Google Flow. Vui lòng mở labs.google hoặc flow.google.com trong Chrome.'
-      });
-      return;
-    }
-
-    // Ưu tiên tab flow.google.com nếu có, ngược lại dùng tab đầu tiên
-    const preferredTab = tabs.find(t =>
-      t.url && t.url.startsWith('https://flow.google.com/')
-    ) || tabs[0];
-
-    console.log('[BulkAI] Gửi lệnh tới tab:', preferredTab.url);
-    chrome.tabs.sendMessage(preferredTab.id, msg, (response) => {
-      if (chrome.runtime.lastError) {
-        console.error('[BulkAI] Lỗi gửi tới content script:', chrome.runtime.lastError.message);
-        sendToServer({
-          type: 'flow_error',
-          id: msg.id,
-          error: 'Không thể gửi lệnh tới tab Google Flow: ' + chrome.runtime.lastError.message
-        });
-      }
-    });
-  });
-}
-
-// ── Forward ChatGPT prompt to content script ───────────────────
+// ── Forward ChatGPT prompt ──────────────────────────────────────
 
 async function forwardPromptToChatGPT(promptData) {
   try {
@@ -169,69 +199,95 @@ async function forwardPromptToChatGPT(promptData) {
       await chrome.tabs.update(targetTab.id, { active: true });
       await new Promise(r => setTimeout(r, 500));
     } catch (e) {
-      console.warn('[BulkAI] Không thể focus tab ChatGPT:', e.message);
+      console.warn('[BulkAI] Không thể focus:', e.message);
     }
 
-    // Kiểm tra content script có sẵn sàng không
-    let contentScriptAlive = false;
+    // Kiểm tra content script
+    let alive = false;
     try {
       const pong = await chrome.tabs.sendMessage(targetTab.id, { action: 'ping' });
-      contentScriptAlive = pong && pong.alive;
+      alive = pong && pong.alive;
     } catch (_) {}
 
-    // Inject content script nếu chưa có
-    if (!contentScriptAlive) {
-      console.log('[BulkAI] Inject content.js vào tab ChatGPT...');
+    // Inject nếu chưa có
+    if (!alive) {
+      console.log('[BulkAI] Inject content.js vào ChatGPT...');
       try {
         await chrome.scripting.executeScript({
           target: { tabId: targetTab.id },
           files: ['content.js']
         });
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 800));
       } catch (injectErr) {
-        console.error('[BulkAI] Không thể inject:', injectErr.message);
-        sendToServer({
-          type: 'error',
-          id: promptData.id,
-          error: 'Không thể inject content script: ' + injectErr.message
-        });
+        console.error('[BulkAI] Inject lỗi:', injectErr.message);
+        sendToServer({ type: 'error', id: promptData.id, error: 'Inject lỗi: ' + injectErr.message });
         return;
       }
     }
 
-    // Gửi prompt tới content script
-    try {
-      await chrome.tabs.sendMessage(targetTab.id, {
-        action: 'inject_prompt',
-        id: promptData.id,
-        content: promptData.content
-      });
-      console.log('[BulkAI] Đã gửi prompt tới ChatGPT tab');
-    } catch (err) {
-      console.error('[BulkAI] Lỗi gửi prompt:', err.message);
-      sendToServer({
-        type: 'error',
-        id: promptData.id,
-        error: 'Lỗi gửi prompt tới ChatGPT: ' + err.message
-      });
+    // Gửi prompt — retry 3 lần
+    let lastErr = null;
+    for (let i = 0; i < 3; i++) {
+      if (i > 0) await new Promise(r => setTimeout(r, 600 * i));
+      try {
+        const resp = await chrome.tabs.sendMessage(targetTab.id, {
+          action: 'inject_prompt',
+          id: promptData.id,
+          content: promptData.content
+        });
+        console.log('[BulkAI] Đã gửi prompt tới ChatGPT (attempt ' + (i + 1) + ')');
+        lastErr = null;
+        break;
+      } catch (err) {
+        lastErr = err;
+        console.warn('[BulkAI] Lần ' + (i + 1) + ' thất bại:', err.message);
+      }
+    }
+
+    if (lastErr) {
+      sendToServer({ type: 'error', id: promptData.id, error: 'Lỗi gửi prompt: ' + lastErr.message });
     }
 
   } catch (e) {
-    console.error('[BulkAI] Lỗi forwardPromptToChatGPT:', e.message);
-    sendToServer({
-      type: 'error',
-      id: promptData.id,
-      error: e.message
-    });
+    console.error('[BulkAI] forwardPromptToChatGPT lỗi:', e.message);
+    sendToServer({ type: 'error', id: promptData.id, error: e.message });
   }
 }
 
-// ── Handle Messages from Content Script ─────────────────────────
+// ── Forward Google Flow prompt ──────────────────────────────────
+
+function forwardToFlowTab(msg) {
+  chrome.tabs.query({ url: FLOW_URLS }, (tabs) => {
+    if (tabs.length === 0) {
+      console.warn('[BulkAI] Không tìm thấy tab Google Flow!');
+      sendToServer({
+        type: 'flow_error',
+        id: msg.id,
+        error: 'Không tìm thấy tab Google Flow.'
+      });
+      return;
+    }
+
+    const tab = tabs.find(t => t.url && t.url.startsWith('https://flow.google.com/')) || tabs[0];
+    chrome.tabs.sendMessage(tab.id, msg, (response) => {
+      if (chrome.runtime.lastError) {
+        console.error('[BulkAI] Lỗi gửi tới Flow:', chrome.runtime.lastError.message);
+        sendToServer({
+          type: 'flow_error',
+          id: msg.id,
+          error: chrome.runtime.lastError.message
+        });
+      }
+    });
+  });
+}
+
+// ── Handle Messages from Content Scripts ────────────────────────
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // ChatGPT response → gửi về BulkAI server
+  // ─── ChatGPT responses ───
   if (msg.action === 'chatgpt_response') {
-    console.log('[BulkAI] Nhận response [' + msg.id + ']: ' + (msg.content || '').substring(0, 60) + '...');
+    console.log('[BulkAI] ✅ Nhận response [' + msg.id + ']: ' + (msg.content || '').substring(0, 80) + '...');
     sendToServer({
       type: 'response',
       id: msg.id,
@@ -242,9 +298,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // ChatGPT error → gửi về BulkAI server
   if (msg.action === 'chatgpt_error') {
-    console.error('[BulkAI] Lỗi ChatGPT [' + msg.id + ']: ' + msg.error);
+    console.error('[BulkAI] ✗ Lỗi ChatGPT [' + msg.id + ']: ' + msg.error);
     sendToServer({
       type: 'error',
       id: msg.id,
@@ -254,16 +309,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // ChatGPT streaming keepalive
   if (msg.action === 'chatgpt_streaming') {
+    // Keepalive from content script during generation
     sendResponse({ ok: true });
     return true;
   }
 
-  // Google Flow results
+  // ─── Google Flow responses ───
   if (msg.type === 'flow_result' || msg.type === 'flow_progress' || msg.type === 'flow_error') {
     sendToServer(msg);
   }
+
   sendResponse({ ok: true });
   return true;
 });
@@ -271,8 +327,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // ── Auto-connect on startup ─────────────────────────────────────
 
 connectWebSocket();
+startKeepalive();
 
-// Re-connect khi service worker được đánh thức
 self.addEventListener('activate', () => {
   connectWebSocket();
 });
