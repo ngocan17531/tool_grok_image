@@ -8,6 +8,10 @@
   if (window.__bulkaiCleanup) {
     try { window.__bulkaiCleanup(); } catch (_) {}
   }
+
+  // Instance ID: chỉ instance MỚI NHẤT xử lý messages
+  const INSTANCE_ID = Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+  window.__bulkaiActiveInstance = INSTANCE_ID;
   window.__bulkaiCsInitialized = true;
 
   const DEBOUNCE_DELAY = 3000; // ms — consider response complete after 3s of no DOM changes
@@ -31,8 +35,10 @@
   const SELECTORS = {
     textarea: [
       '#prompt-textarea',
+      'div[role="textbox"]',
       'div[contenteditable="true"][id="prompt-textarea"]',
       'div[contenteditable="true"][data-placeholder]',
+      'div[contenteditable="true"][role="textbox"]',
       'textarea[data-id="root"]',
       'div.ProseMirror[contenteditable="true"]'
     ],
@@ -501,6 +507,11 @@
   // ─── Message Listener (from background service worker) ──────────
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // Chỉ instance mới nhất xử lý — old instances ignore
+    if (window.__bulkaiActiveInstance !== INSTANCE_ID) {
+      return false;
+    }
+
     switch (message.action) {
       case 'inject_prompt':
         injectPrompt(message.id, message.content);
