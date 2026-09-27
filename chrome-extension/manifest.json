@@ -1,17 +1,27 @@
 {
   "manifest_version": 3,
-  "name": "BulkAI Google Flow Bridge",
-  "version": "1.0.0",
-  "description": "Kết nối BulkAI app với Google Flow để tự động tạo ảnh",
-  "permissions": ["activeTab"],
-  "host_permissions": ["https://labs.google/*", "https://flow.google.com/*"],
+  "name": "BulkAI Bridge",
+  "version": "1.1.0",
+  "description": "Kết nối BulkAI app với ChatGPT (keywords) và Google Flow (ảnh)",
+  "permissions": ["activeTab", "tabs", "scripting"],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://labs.google/*",
+    "https://flow.google.com/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["https://labs.google/*", "https://flow.google.com/*"],
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
       "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://labs.google/*", "https://flow.google.com/*"],
+      "js": ["content_flow.js"],
       "run_at": "document_idle"
     }
   ]
