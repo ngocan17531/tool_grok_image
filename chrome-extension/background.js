@@ -217,38 +217,19 @@ async function forwardPromptToChatGPT(promptData) {
       console.warn('[BulkAI] Không thể focus:', e.message);
     }
 
-    // Kiểm tra content script
-    let alive = false;
-    let isBusy = false;
+    // LUÔN re-inject content.js để đảm bảo version mới nhất
+    // (content.js mới có __bulkaiCleanup guard nên an toàn khi inject lại)
+    console.log('[BulkAI] Re-inject content.js vào ChatGPT...');
     try {
-      const pong = await chrome.tabs.sendMessage(targetTab.id, { action: 'ping' });
-      alive = pong && pong.alive;
-      isBusy = pong && pong.isProcessing;
-    } catch (_) {}
-
-    // Nếu content script đang BUSY → force reset trước khi gửi prompt mới
-    if (alive && isBusy) {
-      console.log('[BulkAI] Content script đang BUSY, gửi force_reset...');
-      try {
-        await chrome.tabs.sendMessage(targetTab.id, { action: 'force_reset' });
-        await new Promise(r => setTimeout(r, 500));
-      } catch (_) {}
-    }
-
-    // Inject nếu chưa có
-    if (!alive) {
-      console.log('[BulkAI] Inject content.js vào ChatGPT...');
-      try {
-        await chrome.scripting.executeScript({
-          target: { tabId: targetTab.id },
-          files: ['content.js']
-        });
-        await new Promise(r => setTimeout(r, 800));
-      } catch (injectErr) {
-        console.error('[BulkAI] Inject lỗi:', injectErr.message);
-        sendToServer({ type: 'error', id: promptData.id, error: 'Inject lỗi: ' + injectErr.message });
-        return;
-      }
+      await chrome.scripting.executeScript({
+        target: { tabId: targetTab.id },
+        files: ['content.js']
+      });
+      await new Promise(r => setTimeout(r, 800));
+    } catch (injectErr) {
+      console.error('[BulkAI] Inject lỗi:', injectErr.message);
+      sendToServer({ type: 'error', id: promptData.id, error: 'Inject lỗi: ' + injectErr.message });
+      return;
     }
 
     // Gửi prompt — retry 3 lần
