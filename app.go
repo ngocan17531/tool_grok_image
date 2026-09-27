@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"BulkAI/pkg/bridge"
@@ -61,6 +61,31 @@ type GoogleFlowGenerateConfig struct {
 
 // CurrentVersion is the current version of the application
 const CurrentVersion = "v1.0.5"
+
+// isNewerVersion returns true if remote version is strictly newer than current.
+// Expects versions in "vX.Y.Z" format.
+func isNewerVersion(current, remote string) bool {
+	parseVer := func(v string) [3]int {
+		v = strings.TrimPrefix(v, "v")
+		parts := strings.Split(v, ".")
+		var nums [3]int
+		for i := 0; i < 3 && i < len(parts); i++ {
+			fmt.Sscanf(parts[i], "%d", &nums[i])
+		}
+		return nums
+	}
+	c := parseVer(current)
+	r := parseVer(remote)
+	for i := 0; i < 3; i++ {
+		if r[i] > c[i] {
+			return true
+		}
+		if r[i] < c[i] {
+			return false
+		}
+	}
+	return false
+}
 
 // UpdateInfo struct for auto-update
 type UpdateInfo struct {
@@ -1671,8 +1696,8 @@ func (a *App) CheckUpdate() UpdateInfo {
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&release); err == nil {
-		// Basic version string comparison (assuming tag is like "v1.0.1")
-		if release.TagName != "" && release.TagName != CurrentVersion {
+		// So sánh semantic version: chỉ báo update khi remote version LỚN HƠN current
+		if release.TagName != "" && isNewerVersion(CurrentVersion, release.TagName) {
 			info.HasUpdate = true
 			info.Version = release.TagName
 			info.Changelog = release.Body

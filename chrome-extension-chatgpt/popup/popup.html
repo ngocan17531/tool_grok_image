@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=380, initial-scale=1.0">
+  <title>BulkAI ChatGPT Bridge</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- Header -->
+    <div class="header">
+      <div class="header-title">
+        <span class="header-icon">⚡</span>
+        <h1>BulkAI Bridge</h1>
+      </div>
+      <div class="version">v1.0.0</div>
+    </div>
+
+    <!-- Connection Status -->
+    <div class="status-card">
+      <div class="status-row">
+        <span class="status-label">Trạng thái</span>
+        <span id="statusBadge" class="status-badge disconnected">
+          <span class="status-dot"></span>
+          <span id="statusText">Chưa kết nối</span>
+        </span>
+      </div>
+      <div class="toggle-row">
+        <span class="toggle-label">Chế độ lắng nghe</span>
+        <label class="toggle-switch">
+          <input type="checkbox" id="listeningToggle">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Server URL -->
+    <div class="config-card">
+      <label for="wsUrl" class="config-label">WebSocket URL</label>
+      <div class="url-row">
+        <input type="text" id="wsUrl" value="ws://localhost:8765" placeholder="ws://localhost:8765">
+        <button id="saveUrlBtn" class="btn-small">Lưu</button>
+      </div>
+    </div>
+
+    <!-- Activity Log -->
+    <div class="log-card">
+      <div class="log-header">
+        <span class="log-title">📋 Nhật ký hoạt động</span>
+        <button id="clearLogsBtn" class="btn-text">Xóa</button>
+      </div>
+      <div id="logContainer" class="log-container">
+        <div class="log-empty">Chưa có hoạt động nào</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

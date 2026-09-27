@@ -564,23 +564,8 @@ Rules:
         addLog(`Đang xuất ${formatLabel} (${sourceLabel}) cho album: ${selectedGalleryFolder}...`, 'info');
 
         try {
-            // Nếu dùng API và xuất Excel → dùng hàm cũ (backend xử lý keyword)
-            if (source === 'api' && format === 'excel') {
-                const res = await ExportGalleryReport(config.output, selectedGalleryFolder, config.prefix, config.geminiKey);
-                if (res.startsWith("Success:")) {
-                    const filePath = res.split(': ')[1];
-                    addLog(`Đã xuất ${formatLabel} thành công: ${filePath}`, 'success');
-                    alert(`Đã xuất file thành công!\nĐường dẫn: ${filePath}`);
-                } else {
-                    addLog(`Lỗi xuất ${formatLabel}: ${res}`, 'error');
-                    alert("Lỗi: " + res);
-                }
-                return;
-            }
-
-            // Nếu dùng API và xuất CSV không cần keywords → dùng hàm cũ
-            if (source === 'api' && format === 'csv') {
-                // Lấy titles, tạo keywords qua Gemini, rồi xuất CSV có keywords
+            // Nếu dùng API (Gemini) → tạo keywordsMap ở frontend rồi gọi ExportWithKeywords
+            if (source === 'api') {
                 const titles = await GetAlbumTitles(config.output, selectedGalleryFolder, config.prefix);
                 if (!titles || titles.length === 0) {
                     addLog("Không tìm thấy title nào trong album.", 'error');
@@ -594,20 +579,28 @@ Rules:
                     const t = titles[i];
                     addLog(`[${i + 1}/${titles.length}] Đang tạo keywords: ${t.title.substring(0, 50)}...`, 'info');
                     try {
-                        keywordsMap[t.title] = await generateKeywordsViaGemini(t.title);
+                        const kw = await generateKeywordsViaGemini(t.title);
+                        keywordsMap[t.title] = kw;
+                        addLog(`  ✓ Keywords (${kw.split(',').length} từ): ${kw.substring(0, 60)}...`, 'success');
                     } catch (e) {
-                        addLog(`Lỗi tạo keywords cho "${t.title}": ${e.message}`, 'error');
+                        addLog(`  ✗ Lỗi tạo keywords cho "${t.title}": ${e.message}`, 'error');
                         keywordsMap[t.title] = "";
                     }
                 }
 
-                const res = await ExportCSVWithKeywords(config.output, selectedGalleryFolder, config.prefix, keywordsMap);
+                let res;
+                if (format === 'excel') {
+                    res = await ExportGalleryReportWithKeywords(config.output, selectedGalleryFolder, config.prefix, keywordsMap);
+                } else {
+                    res = await ExportCSVWithKeywords(config.output, selectedGalleryFolder, config.prefix, keywordsMap);
+                }
+
                 if (res.startsWith("Success:")) {
                     const filePath = res.split(': ')[1];
-                    addLog(`Đã xuất CSV thành công: ${filePath}`, 'success');
-                    alert(`Đã xuất CSV thành công!\nĐường dẫn: ${filePath}`);
+                    addLog(`Đã xuất ${formatLabel} thành công: ${filePath}`, 'success');
+                    alert(`Đã xuất file thành công!\nĐường dẫn: ${filePath}`);
                 } else {
-                    addLog(`Lỗi xuất CSV: ${res}`, 'error');
+                    addLog(`Lỗi xuất ${formatLabel}: ${res}`, 'error');
                     alert("Lỗi: " + res);
                 }
                 return;
@@ -628,13 +621,18 @@ Rules:
                 const t = titles[i];
                 addLog(`[${i + 1}/${titles.length}] Đang tạo keywords: ${t.title.substring(0, 50)}...`, 'info');
                 try {
-                    keywordsMap[t.title] = await generateKeywordsViaBridge(t.title);
-                    addLog(`  ✓ Đã tạo keywords cho: ${t.title.substring(0, 50)}`, 'success');
+                    const kw = await generateKeywordsViaBridge(t.title);
+                    keywordsMap[t.title] = kw;
+                    addLog(`  ✓ Keywords (${kw ? kw.split(',').length : 0} từ): ${kw ? kw.substring(0, 60) : '(trống)'}`, 'success');
                 } catch (e) {
                     addLog(`  ✗ Lỗi tạo keywords cho "${t.title}": ${e.message}`, 'error');
                     keywordsMap[t.title] = "";
                 }
             }
+
+            // Debug: kiểm tra keywordsMap trước khi gọi export
+            const nonEmptyCount = Object.values(keywordsMap).filter(v => v && v.length > 0).length;
+            addLog(`[DEBUG] keywordsMap: ${Object.keys(keywordsMap).length} titles, ${nonEmptyCount} có keywords`, 'info');
 
             // Gọi backend để ghi file
             let res;
