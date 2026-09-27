@@ -2605,7 +2605,7 @@ ${bannedWords.map(w => `- "${w.banned}" → thay bằng "${w.replacement || '(b�
                                         <div>
                                             <h3 className="text-xl font-bold flex items-center gap-2">Cập nhật phần mềm {isUpdating && <Sparkles size={16} className="animate-spin text-accentEnd" />}</h3>
                                             <p className="text-sm text-textSoft mt-1">
-                                                Phiên bản hiện tại: <span className="text-accentEnd font-mono font-semibold">v1.0.3</span>
+                                                Phiên bản hiện tại: <span className="text-accentEnd font-mono font-semibold">v1.1.2</span>
                                                 {updateInfo && !updateInfo.has_update && <span className="ml-2 text-green-400 text-xs">✓ Đang dùng bản mới nhất</span>}
                                             </p>
                                         </div>
