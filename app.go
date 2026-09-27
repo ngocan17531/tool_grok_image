@@ -60,7 +60,7 @@ type GoogleFlowGenerateConfig struct {
 }
 
 // CurrentVersion is the current version of the application
-const CurrentVersion = "v1.0.5"
+const CurrentVersion = "v1.1.2"
 
 // isNewerVersion returns true if remote version is strictly newer than current.
 // Expects versions in "vX.Y.Z" format.
