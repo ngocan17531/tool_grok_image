@@ -1,4 +1,4 @@
-// BulkAI ChatGPT Bridge — Content Script
+// BulkAI ChatGPT Bridge — Content Script  
 // Injects prompts into ChatGPT textarea, observes responses via MutationObserver
 
 (() => {
@@ -12,7 +12,7 @@
 
   const DEBOUNCE_DELAY = 3000; // ms — consider response complete after 3s of no DOM changes
   const RESPONSE_TIMEOUT = 180000; // ms — max 3 minutes to wait for response
-  const POLLING_INTERVAL = 1500;   // ms — polling fallback interval (giảm từ 4000 → 1500)
+  const POLLING_INTERVAL = 1500;   // ms — polling fallback interval
   const KEEPALIVE_INTERVAL = 5000; // ms — ping độc lập giữ SW khỏi bị kill
 
   let currentPromptId = null;
@@ -20,16 +20,15 @@
   let debounceTimer = null;
   let timeoutTimer = null;
   let pollingTimer = null;
-  let keepaliveTimer = null; // SW keepalive độc lập trong suốt thời gian ChatGPT generate
+  let keepaliveTimer = null;
   let isProcessing = false;
   let lastResponseText = '';
   let messageCountBefore = 0;
-  let textareaWasCleared = false; // tracks if textarea cleared after submit
+  let textareaWasCleared = false;
 
   // ─── DOM Selectors (multiple fallbacks for ChatGPT UI changes) ─────
 
   const SELECTORS = {
-    // Textarea / input area
     textarea: [
       '#prompt-textarea',
       'div[contenteditable="true"][id="prompt-textarea"]',
@@ -37,7 +36,6 @@
       'textarea[data-id="root"]',
       'div.ProseMirror[contenteditable="true"]'
     ],
-    // Send button
     sendButton: [
       'button[data-testid="send-button"]',
       'button[data-testid="fruitjuice-send-button"]',
@@ -46,18 +44,14 @@
       'button[aria-label="Gửi tin nhắn"]',
       'button[aria-label="Gửi lời nhắc"]',
       'button[aria-label="Gửi"]',
-      'form button[type="submit"]',
-      'button.btn-primary svg[viewBox] ~ span'
+      'form button[type="submit"]'
     ],
-    // All assistant messages container
-    // NOTE: ChatGPT now uses <article> instead of <div> — keep both!
     assistantMessages: [
-      'article[data-message-author-role="assistant"]', // ChatGPT 2025+ (article)
-      'div[data-message-author-role="assistant"]',     // older / fallback
+      'article[data-message-author-role="assistant"]',
+      'div[data-message-author-role="assistant"]',
       'div.agent-turn',
-      '[data-message-author-role="assistant"]'         // any tag fallback
+      '[data-message-author-role="assistant"]'
     ],
-    // Stop generating / loading indicator
     stopButton: [
       'button[data-testid="stop-button"]',
       'button[aria-label="Stop generating"]',
@@ -69,19 +63,12 @@
       'button[aria-label*="Dừng"]',
       'button[data-testid*="stop"]'
     ],
-    // Thinking / loading spinner
     thinkingIndicator: [
       'div[class*="result-thinking"]',
       'div[class*="streaming"]',
       'span.result-streaming',
       '[class*="loading-spinner"]',
       'div[class*="loading"]'
-    ],
-    // Model selector
-    modelSelector: [
-      'button[data-testid="model-switcher-dropdown-button"]',
-      'button[aria-haspopup="menu"][class*="model"]',
-      'div[class*="model-switcher"]'
     ]
   };
 
@@ -111,18 +98,11 @@
     return querySelectorAll(SELECTORS.assistantMessages).length;
   }
 
-  function getLastAssistantMessage() {
-    const messages = querySelectorAll(SELECTORS.assistantMessages);
-    if (messages.length > 0) return messages[messages.length - 1];
-    const byRole = document.querySelectorAll('[data-message-author-role="assistant"]');
-    if (byRole.length > 0) return byRole[byRole.length - 1];
-    return null;
-  }
-
   function getLastAssistantText() {
-    // Strategy 1: Theo container assistant
-    const lastMsg = getLastAssistantMessage();
-    if (lastMsg) {
+    // Lấy message cuối cùng dựa trên data-message-author-role
+    const messages = document.querySelectorAll('[data-message-author-role="assistant"]');
+    if (messages.length > 0) {
+      const lastMsg = messages[messages.length - 1];
       const markdownEl = lastMsg.querySelector('.markdown') ||
                          lastMsg.querySelector('[class*="markdown"]') ||
                          lastMsg.querySelector('.prose') ||
@@ -131,7 +111,7 @@
       if (text) return text;
     }
 
-    // Strategy 2: Lấy block .markdown cuối cùng trên trang
+    // Fallback: .markdown blocks
     const markdownEls = document.querySelectorAll('.markdown, [class*="markdown"]');
     if (markdownEls.length > 0) {
       const text = (markdownEls[markdownEls.length - 1].innerText ||
@@ -139,19 +119,11 @@
       if (text) return text;
     }
 
-    // Strategy 3: Fallback các container turn
-    const anyMsg = document.querySelector('[data-message-author-role="assistant"]:last-of-type') ||
-                   document.querySelector('article:last-of-type') ||
-                   document.querySelector('.agent-turn:last-child');
-    if (anyMsg) {
-      return (anyMsg.innerText || anyMsg.textContent || '').trim();
-    }
-
     return '';
   }
 
   function isStillGenerating() {
-    // 1. Check if stop button is visible ONLY inside composer / prompt form
+    // Check stop button inside composer
     const composer = document.querySelector('form') ||
                      document.querySelector('#prompt-textarea')?.closest('form, div[class*="composer"]');
 
@@ -161,27 +133,20 @@
       );
       if (stopBtn && isElementVisible(stopBtn)) return true;
 
-      // Check for stop square (<rect>) ONLY inside composer buttons
       const composerStopSvg = composer.querySelector('button svg rect');
       if (composerStopSvg && isElementVisible(composerStopSvg.closest('button') || composerStopSvg)) {
         return true;
       }
     }
 
-    // Check outside composer with strict selectors only
     const strictStop = document.querySelector('button[data-testid="stop-button"]');
     if (strictStop && isElementVisible(strictStop)) return true;
 
-    // 2. Check for thinking / streaming indicator
     const thinking = querySelector(SELECTORS.thinkingIndicator);
     if (thinking && isElementVisible(thinking)) return true;
 
-    // 3. Check for streaming cursor
     const streamingCursor = document.querySelector('.result-streaming, [class*="result-streaming"]');
     if (streamingCursor && isElementVisible(streamingCursor)) return true;
-
-    // CHÚ Ý: Tuyệt đối KHÔNG kiểm tra sendBtn.disabled ở đây!
-    // Khi ChatGPT tạo xong phản hồi, ô nhập rỗng nên send button tự động bị disable.
 
     return false;
   }
@@ -195,14 +160,13 @@
   // ─── Prompt Injection ───────────────────────────────────────────
 
   async function injectPrompt(promptId, content) {
+    // KHÔNG kiểm tra isProcessing — background.js đã force_reset trước khi gửi
+    // Nếu vẫn processing từ prompt cũ, reset ngay
     if (isProcessing) {
-      chrome.runtime.sendMessage({
-        action: 'chatgpt_error',
-        id: promptId,
-        error: 'Đang xử lý prompt khác, vui lòng chờ.',
-        code: 'BUSY'
-      });
-      return;
+      console.log('[BulkAI] ⚠️ Still processing, force reset before new prompt');
+      stopResponseObserver();
+      isProcessing = false;
+      currentPromptId = null;
     }
 
     isProcessing = true;
@@ -211,154 +175,91 @@
     textareaWasCleared = false;
 
     try {
-      // Record current message count
+      // Record current message count BEFORE injecting
       messageCountBefore = getAssistantMessageCount();
+      console.log(`[BulkAI] === New prompt [${promptId}] === msgCount before: ${messageCountBefore}`);
 
       // Find textarea
       const textarea = querySelector(SELECTORS.textarea);
       if (!textarea) {
-        throw new Error('Không tìm thấy ô nhập ChatGPT. Đảm bảo trang ChatGPT đã tải xong.');
+        throw new Error('Không tìm thấy ô nhập ChatGPT.');
       }
 
-      console.log('[BulkAI] Found textarea:', textarea.tagName, textarea.id);
-
-      // ── Step 1: Brief focus attempt (background should have already focused) ──
+      // Focus
       window.focus();
       textarea.scrollIntoView({ behavior: 'instant', block: 'center' });
       textarea.focus();
       await sleep(300);
 
-      const hasFocus = document.hasFocus();
-      console.log(`[BulkAI] document.hasFocus() = ${hasFocus}`);
-
-      // ── Step 2: Inject text ──
-      // Strategy waterfall (most → least reliable):
-      //   A. Standard <textarea> (rare)
-      //   B. execCommand insertText (requires focus, fastest for ProseMirror)
-      //   C. ClipboardEvent paste (works without focus, ProseMirror handles natively)
-      //   D. Direct DOM + events (last resort)
+      // ── Inject text ──
       let injected = false;
 
       if (textarea.tagName === 'TEXTAREA') {
-        // ── A: Standard textarea ──
         textarea.value = content;
         textarea.dispatchEvent(new Event('input', { bubbles: true }));
         injected = true;
-        console.log('[BulkAI] Path A: textarea.value');
       }
 
       if (!injected) {
-        // ── B: execCommand (ProseMirror div) ──
-        console.log('[BulkAI] Path B: execCommand insertText');
+        // Try execCommand insertText
         textarea.focus();
-        await sleep(50);
-        try {
-          const sel = window.getSelection();
-          const range = document.createRange();
-          range.selectNodeContents(textarea);
-          sel.removeAllRanges();
-          sel.addRange(range);
-        } catch (_) {}
-        document.execCommand('selectAll', false, null);
-        injected = document.execCommand('insertText', false, content);
-        console.log('[BulkAI] Path B execCommand result:', injected, 'len:', textarea.textContent.trim().length);
-        if (!injected || textarea.textContent.trim().length === 0) {
-          injected = false;
-        }
-      }
-
-      if (!injected) {
-        // ── C: ClipboardEvent paste (best no-focus approach) ──
-        // ProseMirror / ChatGPT React has a native paste handler that:
-        //   1. Reads text/plain from clipboardData
-        //   2. Inserts it via its own transaction system (no DOM mutation needed)
-        //   3. Updates React state correctly → send button becomes active
-        console.log('[BulkAI] Path C: ClipboardEvent paste');
-        textarea.focus();
+        textarea.textContent = '';
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
         await sleep(100);
 
-        // First clear existing content via selectAll + delete
-        document.execCommand('selectAll', false, null);
-        document.execCommand('delete', false, null);
-        await sleep(50);
-
-        const dt = new DataTransfer();
-        dt.setData('text/plain', content);
-        const pasteEvent = new ClipboardEvent('paste', {
-          bubbles: true,
-          cancelable: true,
-          clipboardData: dt
-        });
-        textarea.dispatchEvent(pasteEvent);
-        await sleep(200); // give ProseMirror time to process paste
-
-        injected = textarea.textContent.trim().length > 0;
-        console.log('[BulkAI] Path C paste result:', injected);
+        const ok = document.execCommand('insertText', false, content);
+        if (ok && textarea.textContent.trim().length > 0) {
+          injected = true;
+          console.log('[BulkAI] Injected via execCommand');
+        }
       }
 
       if (!injected) {
-        // ── D: Direct DOM mutation (last resort) ──
-        // WARNING: mutating innerHTML can break ProseMirror's internal node map.
-        // We minimise damage by only replacing the inner <p>, not the root div.
-        console.log('[BulkAI] Path D: direct DOM mutation (last resort)');
-
-        // Find or create the editable paragraph inside ProseMirror
-        let editorP = textarea.querySelector('p');
-        if (editorP) {
-          editorP.textContent = content;
-        } else {
-          textarea.innerHTML = '';
-          editorP = document.createElement('p');
-          editorP.textContent = content;
-          textarea.appendChild(editorP);
-        }
-
-        // Full event sequence ProseMirror + React need
-        textarea.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
-        textarea.dispatchEvent(new InputEvent('beforeinput', {
-          bubbles: true, cancelable: true, inputType: 'insertText', data: content
-        }));
-        textarea.dispatchEvent(new InputEvent('input', {
-          bubbles: true, inputType: 'insertText', data: content
-        }));
-        textarea.dispatchEvent(new Event('change', { bubbles: true }));
-        textarea.offsetHeight; // force reflow
-
-        injected = textarea.textContent.trim().length > 0;
-        console.log('[BulkAI] Path D DOM result:', injected);
+        // Clipboard paste fallback
+        try {
+          const dt = new DataTransfer();
+          dt.setData('text/plain', content);
+          const pasteEvent = new ClipboardEvent('paste', {
+            bubbles: true, cancelable: true, clipboardData: dt
+          });
+          textarea.dispatchEvent(pasteEvent);
+          await sleep(300);
+          if (textarea.textContent.trim().length > 0 || textarea.innerHTML.includes(content.substring(0, 20))) {
+            injected = true;
+            console.log('[BulkAI] Injected via paste');
+          }
+        } catch (_) {}
       }
 
-      if (!injected || textarea.textContent.trim().length === 0) {
-        throw new Error('Không thể nhập nội dung vào ô ChatGPT. Hãy thử reload trang.');
+      if (!injected) {
+        // Direct DOM manipulation
+        textarea.innerHTML = '';
+        const p = document.createElement('p');
+        p.textContent = content;
+        textarea.appendChild(p);
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        injected = true;
+        console.log('[BulkAI] Injected via DOM');
       }
 
-      // ── Step 3: Wait for React/ProseMirror to process ──
-      // Wait longer when no focus — React may batch updates differently
-      const waitTime = hasFocus ? 500 : 1500;
-      console.log(`[BulkAI] Waiting ${waitTime}ms for React to process...`);
-      await sleep(waitTime);
+      await sleep(500);
 
-      // ── Step 4: Submit prompt (Click send button OR press Enter) ──
+      // ── Submit ──
       let sent = false;
-      for (let attempt = 0; attempt < 8; attempt++) {
+      for (let attempt = 0; attempt < 5; attempt++) {
         const sendBtn = querySelector(SELECTORS.sendButton);
-        const isBtnEnabled = sendBtn && !sendBtn.disabled && sendBtn.getAttribute('aria-disabled') !== 'true';
 
-        // Method 1: Click send button if enabled
-        if (isBtnEnabled) {
-          console.log(`[BulkAI] Click send button (attempt ${attempt + 1})`);
+        if (sendBtn && !sendBtn.disabled) {
           try { sendBtn.click(); } catch (_) {}
           sendBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
           sendBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
           sendBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
           sendBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
           sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-          // Sau khi click button, chờ đủ để ChatGPT xử lý — KHÔNG gửi Enter thêm!
           await sleep(1000);
-
         } else {
-          // Method 2: Enter key — CHỈ dùng khi button thực sự không click được (tránh nhá liên tục)
-          console.log(`[BulkAI] Button disabled, thử Enter (attempt ${attempt + 1})`);
+          // Enter key fallback
+          console.log(`[BulkAI] Button disabled/missing, using Enter (attempt ${attempt + 1})`);
           textarea.focus();
           const enterOpts = {
             key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
@@ -371,7 +272,7 @@
           await sleep(800);
         }
 
-        // Kiểm tra xem đã gửi thành công chưa:
+        // Check if sent
         const stopBtn = querySelector(SELECTORS.stopButton);
         const isStopVisible = stopBtn && isElementVisible(stopBtn);
         const textCleared = textarea && textarea.textContent.trim().length === 0;
@@ -380,7 +281,7 @@
         if (textCleared || isStopVisible || msgIncreased) {
           sent = true;
           textareaWasCleared = textCleared;
-          console.log(`[BulkAI] Prompt đã gửi thành công (attempt ${attempt + 1}): cleared=${textCleared}, generating=${isStopVisible}, msgIncreased=${msgIncreased}`);
+          console.log(`[BulkAI] Prompt sent (attempt ${attempt + 1}): cleared=${textCleared}, stop=${isStopVisible}, newMsg=${msgIncreased}`);
           break;
         }
 
@@ -388,18 +289,15 @@
       }
 
       if (!sent) {
-        throw new Error('Không thể gửi tin nhắn tới ChatGPT. Nút gửi bị vô hiệu hóa hoặc không thể submit. Vui lòng kiểm tra tab ChatGPT.');
+        throw new Error('Không thể gửi tin nhắn tới ChatGPT.');
       }
 
-      console.log(`[BulkAI] Đã gửi prompt: ${content.substring(0, 60)}...`);
-
-      // ── Step 5: Đợi xác nhận gửi và bắt đầu theo dõi ──
+      // Wait for textarea to clear
       if (!textareaWasCleared) {
         for (let i = 0; i < 6; i++) {
           await sleep(500);
           if (textarea && textarea.textContent.trim().length === 0) {
             textareaWasCleared = true;
-            console.log(`[BulkAI] Textarea cleared after ${(i + 1) * 500}ms`);
             break;
           }
         }
@@ -410,14 +308,10 @@
       startResponseObserver();
 
     } catch (e) {
+      console.error('[BulkAI] injectPrompt error:', e.message);
       isProcessing = false;
       currentPromptId = null;
-      chrome.runtime.sendMessage({
-        action: 'chatgpt_error',
-        id: promptId,
-        error: e.message,
-        code: 'DOM_ERROR'
-      });
+      sendResponseToBackground(promptId, '', 'ERROR: ' + e.message);
     }
   }
 
@@ -426,25 +320,20 @@
   function startResponseObserver() {
     stopResponseObserver();
 
-    // Set overall timeout
+    // Overall timeout
     timeoutTimer = setTimeout(() => {
       console.log('[BulkAI] Response timeout reached');
       finishResponse('TIMEOUT');
     }, RESPONSE_TIMEOUT);
 
-    // Start MutationObserver on the chat container
+    // MutationObserver
     const chatContainer = document.querySelector('main') ||
                           document.querySelector('[role="main"]') ||
                           document.body;
 
-    observer = new MutationObserver((mutations) => {
-      // Keep service worker alive
+    observer = new MutationObserver(() => {
       chrome.runtime.sendMessage({ action: 'chatgpt_streaming' }).catch(() => {});
-
       if (!isProcessing) return;
-
-      // Schedule debounce trên MỌI DOM change — bỏ guard cũ vì selector có thể sai
-      // isStillGenerating() bên trong debounce sẽ xác định xong chưa
       scheduleDebounce();
     });
 
@@ -454,15 +343,13 @@
       characterData: true
     });
 
-    // ── Keepalive heartbeat độc lập: Giữ SW sống suốt quá trình ChatGPT generate ──
-    // Mục đích: MutationObserver chỉ ping khi có DOM change.
-    // Nếu ChatGPT dừng "thinking" (không đổi DOM), SW vẫn cần được giữ sống.
+    // Keepalive heartbeat
     keepaliveTimer = setInterval(() => {
       if (!isProcessing) return;
       chrome.runtime.sendMessage({ action: 'chatgpt_streaming' }).catch(() => {});
     }, KEEPALIVE_INTERVAL);
 
-    // ── Polling fallback + text stability detection ──
+    // ── Polling fallback + text stability ──
     const processingStartTime = Date.now();
     let lastSeenText = '';
     let textStablePolls = 0;
@@ -486,23 +373,23 @@
         }
       }
 
-      console.log(`[BulkAI] Poll: msgCount=${currentCount}/${messageCountBefore}, generating=${stillGen}, stable=${textStablePolls}, textLen=${responseText.length}, elapsed=${Math.round(elapsed / 1000)}s`);
+      console.log(`[BulkAI] Poll: count=${currentCount}/${messageCountBefore}, gen=${stillGen}, stable=${textStablePolls}, len=${responseText.length}, ${Math.round(elapsed / 1000)}s`);
 
-      // Trường hợp 1: Không còn tạo VÀ text đã ổn định
+      // Case 1: Done generating + text stable + new message exists
       if (responseText && !stillGen && textStablePolls >= 1 && (hasNewMessage || elapsed > 2500)) {
-        console.log('[BulkAI] Polling: hoàn tất -> finishResponse');
+        console.log('[BulkAI] Polling: response complete');
         finishResponse('success');
         return;
       }
 
-      // Trường hợp 2: Text đã dừng thay đổi từ 3s trở lên và có nội dung đáng kể (>10 ký tự)
+      // Case 2: Text stable for 3s+ with >10 chars
       if (responseText && responseText.length > 10 && textStablePolls >= 2 && elapsed > 4000) {
-        console.log('[BulkAI] Polling: text ổn định 3s -> finishResponse');
+        console.log('[BulkAI] Polling: text stable 3s+');
         finishResponse('success');
         return;
       }
 
-      // Trường hợp 3: Safety-net sau 15s nếu đã có nội dung
+      // Case 3: Safety net after 15s
       if (elapsed > 15000 && responseText && textStablePolls >= 1) {
         console.warn('[BulkAI] Safety-net: force finishResponse');
         finishResponse('success');
@@ -511,7 +398,7 @@
     }, POLLING_INTERVAL);
   }
 
-  // ─── Debounce scheduler (fixes nested-timeout hole) ─────────────
+  // ─── Debounce scheduler ─────────────────────────────────────────
 
   function scheduleDebounce() {
     clearDebounceTimer();
@@ -520,10 +407,9 @@
       const text = getLastAssistantText();
       const stillGen = isStillGenerating();
       if (!stillGen && text) {
-        console.log('[BulkAI] Debounce: hoàn tất phản hồi');
+        console.log('[BulkAI] Debounce: response complete');
         finishResponse('success');
       } else if (stillGen) {
-        // Still generating — keep rescheduling until done or timeout
         scheduleDebounce();
       } else if (text) {
         finishResponse('success');
@@ -532,104 +418,77 @@
   }
 
   function stopResponseObserver() {
-    if (observer) {
-      observer.disconnect();
-      observer = null;
-    }
+    if (observer) { observer.disconnect(); observer = null; }
     clearDebounceTimer();
-    if (timeoutTimer) {
-      clearTimeout(timeoutTimer);
-      timeoutTimer = null;
-    }
-    if (pollingTimer) {
-      clearInterval(pollingTimer);
-      pollingTimer = null;
-    }
-    if (keepaliveTimer) {
-      clearInterval(keepaliveTimer);
-      keepaliveTimer = null;
-    }
+    if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = null; }
+    if (pollingTimer) { clearInterval(pollingTimer); pollingTimer = null; }
+    if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
   }
 
   function clearDebounceTimer() {
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
-      debounceTimer = null;
-    }
+    if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
   }
 
   function finishResponse(status) {
     stopResponseObserver();
 
-    const responseHTML = getLastAssistantText();
     const promptId = currentPromptId;
-
     isProcessing = false;
     currentPromptId = null;
 
-    if (!responseHTML && status !== 'TIMEOUT') {
-      // Wait a bit more and retry once
-      setTimeout(() => {
-        const retryHTML = getLastAssistantText();
-        if (retryHTML) {
-          sendResponseToBackground(promptId, retryHTML, 'success');
-        } else {
-          sendResponseToBackground(promptId, '', status);
-        }
-      }, 2000);
-      return;
+    // Lấy response text - phải là message MỚI (sau messageCountBefore)
+    const currentCount = getAssistantMessageCount();
+    let responseText = '';
+
+    if (currentCount > messageCountBefore) {
+      // Có message mới → lấy text từ message cuối
+      responseText = getLastAssistantText();
+    } else {
+      // Chưa có message mới → retry 1 lần
+      console.log('[BulkAI] No new message yet, retrying in 2s...');
     }
 
-    sendResponseToBackground(promptId, responseHTML, status);
+    console.log(`[BulkAI] finishResponse: status=${status}, promptId=${promptId}, textLen=${responseText.length}, msgCount=${currentCount}/${messageCountBefore}`);
+
+    if (responseText && status === 'success') {
+      sendResponseToBackground(promptId, responseText, 'success');
+    } else if (!responseText && status === 'success') {
+      // Text empty, retry once
+      setTimeout(() => {
+        const retryText = getLastAssistantText();
+        const retryCount = getAssistantMessageCount();
+        console.log(`[BulkAI] Retry: textLen=${retryText.length}, count=${retryCount}`);
+        if (retryText && retryCount > messageCountBefore) {
+          sendResponseToBackground(promptId, retryText, 'success');
+        } else {
+          sendResponseToBackground(promptId, retryText || '', 'NO_RESPONSE');
+        }
+      }, 2000);
+    } else {
+      sendResponseToBackground(promptId, '', status);
+    }
   }
 
   function sendResponseToBackground(promptId, content, status) {
+    if (!promptId) return;
+
     if (status === 'success' && content) {
+      console.log(`[BulkAI] ✅ Sending response [${promptId}]: ${content.substring(0, 80)}...`);
       chrome.runtime.sendMessage({
         action: 'chatgpt_response',
         id: promptId,
         content: content
-      });
+      }).catch(e => console.error('[BulkAI] Send response error:', e));
     } else {
+      console.log(`[BulkAI] ✗ Sending error [${promptId}]: ${status}`);
       chrome.runtime.sendMessage({
         action: 'chatgpt_error',
         id: promptId,
         error: status === 'TIMEOUT'
           ? 'ChatGPT không phản hồi trong thời gian cho phép.'
-          : 'Không nhận được phản hồi từ ChatGPT.',
+          : 'Không nhận được phản hồi: ' + status,
         code: status
-      });
-    }
-  }
-
-  // ─── Model Selection ────────────────────────────────────────────
-
-  async function selectModel(modelName) {
-    try {
-      const modelBtn = querySelector(SELECTORS.modelSelector);
-      if (!modelBtn) {
-        console.log('[BulkAI] Không tìm thấy nút chọn model');
-        return;
-      }
-
-      modelBtn.click();
-      await sleep(500);
-
-      // Find the model option in the dropdown
-      const options = document.querySelectorAll('[role="option"], [role="menuitem"], li[data-testid]');
-      for (const option of options) {
-        if (option.textContent.toLowerCase().includes(modelName.toLowerCase())) {
-          option.click();
-          console.log(`[BulkAI] Đã chọn model: ${modelName}`);
-          return;
-        }
-      }
-
-      // Close dropdown if model not found
-      modelBtn.click();
-      console.log(`[BulkAI] Không tìm thấy model: ${modelName}`);
-    } catch (e) {
-      console.error('[BulkAI] Lỗi chọn model:', e);
+      }).catch(e => console.error('[BulkAI] Send error error:', e));
     }
   }
 
@@ -649,8 +508,7 @@
         break;
 
       case 'cancel_prompt':
-        // Frontend timeout → hủy prompt đang xử lý, reset state
-        console.log('[BulkAI] Cancel prompt request, resetting state...');
+        console.log('[BulkAI] Cancel prompt, resetting...');
         stopResponseObserver();
         isProcessing = false;
         currentPromptId = null;
@@ -658,19 +516,13 @@
         break;
 
       case 'force_reset':
-        // Force reset toàn bộ state
-        console.log('[BulkAI] Force reset state');
+        console.log('[BulkAI] Force reset');
         stopResponseObserver();
         isProcessing = false;
         currentPromptId = null;
         lastResponseText = '';
         messageCountBefore = 0;
         sendResponse({ reset: true });
-        break;
-
-      case 'select_model':
-        selectModel(message.model);
-        sendResponse({ received: true });
         break;
 
       case 'ping':
@@ -680,7 +532,13 @@
     return true;
   });
 
-  // ─── Init ───────────────────────────────────────────────────────
+  // ─── Cleanup function ──────────────────────────────────────────
+
+  window.__bulkaiCleanup = () => {
+    stopResponseObserver();
+    isProcessing = false;
+    currentPromptId = null;
+  };
 
   console.log('[BulkAI ChatGPT Bridge] Content script loaded on', window.location.href);
 })();
