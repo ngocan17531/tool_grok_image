@@ -97,63 +97,111 @@
   }
 
   function getAssistantMessageCount() {
-    const byRole = document.querySelectorAll('[data-message-author-role="assistant"]');
-    if (byRole.length > 0) return byRole.length;
-    const byMd = document.querySelectorAll('.markdown');
-    if (byMd.length > 0) return byMd.length;
-    return querySelectorAll(SELECTORS.assistantMessages).length;
+    // ChatGPT 2026: no more data-message-author-role attribute
+    // Count by text header: "ChatGPT đã nói:" or "ChatGPT said:"
+    const allText = document.querySelectorAll('div, span, h3, h4, h5, h6, p');
+    let count = 0;
+    for (const el of allText) {
+      const t = (el.textContent || '').trim();
+      if (t === 'ChatGPT đã nói:' || t === 'ChatGPT said:' || t === 'ChatGPT đã nói' || t === 'ChatGPT said') {
+        count++;
+      }
+    }
+    // Fallback: old selectors
+    if (count === 0) {
+      const byRole = document.querySelectorAll('[data-message-author-role="assistant"]');
+      if (byRole.length > 0) return byRole.length;
+    }
+    return count;
   }
 
   function getLastAssistantText() {
-    // Lấy message cuối cùng dựa trên data-message-author-role
-    const messages = document.querySelectorAll('[data-message-author-role="assistant"]');
-    if (messages.length > 0) {
-      const lastMsg = messages[messages.length - 1];
-      const markdownEl = lastMsg.querySelector('.markdown') ||
-                         lastMsg.querySelector('[class*="markdown"]') ||
-                         lastMsg.querySelector('.prose') ||
-                         lastMsg;
-      const text = (markdownEl.innerText || markdownEl.textContent || '').trim();
-      if (text) return text;
-    }
+    // Strategy 1: Find last "ChatGPT đã nói:" / "ChatGPT said:" header
+    // then collect all sibling/following text until next message header
+    const scrollContainer = document.querySelector('div.thread-scroll-container') || document.querySelector('main');
+    if (!scrollContainer) return '';
 
-    // Fallback: .markdown blocks
-    const markdownEls = document.querySelectorAll('.markdown, [class*="markdown"]');
-    if (markdownEls.length > 0) {
-      const text = (markdownEls[markdownEls.length - 1].innerText ||
-                    markdownEls[markdownEls.length - 1].textContent || '').trim();
-      if (text) return text;
+    const fullText = scrollContainer.innerText || '';
+    
+    // Split by assistant/user headers
+    const assistantPattern = /(?:ChatGPT (?:đã nói|said):?)/g;
+    const userPattern = /(?:Bạn (?:đã nói|said):?|You said:?)/g;
+    
+    // Find all assistant message positions
+    const assistantPositions = [];
+    let match;
+    while ((match = assistantPattern.exec(fullText)) !== null) {
+      assistantPositions.push(match.index + match[0].length);
     }
-
-    return '';
+    
+    if (assistantPositions.length === 0) {
+      // Fallback: old selectors
+      const msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+      if (msgs.length > 0) {
+        const lastMsg = msgs[msgs.length - 1];
+        return (lastMsg.innerText || lastMsg.textContent || '').trim();
+      }
+      return '';
+    }
+    
+    // Get text after the LAST assistant header
+    const lastStart = assistantPositions[assistantPositions.length - 1];
+    let lastEnd = fullText.length;
+    
+    // Find next user header after last assistant header
+    userPattern.lastIndex = lastStart;
+    const nextUser = userPattern.exec(fullText);
+    if (nextUser) {
+      lastEnd = nextUser.index;
+    }
+    
+    let responseText = fullText.substring(lastStart, lastEnd).trim();
+    
+    // Remove action button text at the end (Copy, Read aloud, etc.)
+    responseText = responseText
+      .replace(/\n(Sao chép|Copy|Đọc to|Read aloud|Tạo lại câu trả lời|Regenerate|Đánh giá câu trả lời|Good response|Chia sẻ|Share|Hành động khác|More actions|Xem thêm|See more)(\n|$)/gi, '\n')
+      .trim();
+    
+    return responseText;
   }
 
   function isStillGenerating() {
-    // Check stop button inside composer
-    const composer = document.querySelector('form') ||
-                     document.querySelector('#prompt-textarea')?.closest('form, div[class*="composer"]');
-
-    if (composer) {
-      const stopBtn = composer.querySelector(
-        'button[data-testid="stop-button"], button[aria-label*="Stop"], button[aria-label*="Dừng"], button[data-testid*="stop"]'
-      );
-      if (stopBtn && isElementVisible(stopBtn)) return true;
-
-      const composerStopSvg = composer.querySelector('button svg rect');
-      if (composerStopSvg && isElementVisible(composerStopSvg.closest('button') || composerStopSvg)) {
-        return true;
-      }
+    // Method 1: Check for stop/pause button visible anywhere
+    const stopSelectors = [
+      'button[data-testid="stop-button"]',
+      'button[aria-label*="Stop"]',
+      'button[aria-label*="Dừng"]',
+      'button[aria-label*="Pause"]',
+      'button[aria-label*="Tạm dừng"]'
+    ];
+    for (const sel of stopSelectors) {
+      const btn = document.querySelector(sel);
+      if (btn && isElementVisible(btn)) return true;
     }
-
-    const strictStop = document.querySelector('button[data-testid="stop-button"]');
-    if (strictStop && isElementVisible(strictStop)) return true;
-
-    const thinking = querySelector(SELECTORS.thinkingIndicator);
-    if (thinking && isElementVisible(thinking)) return true;
-
-    const streamingCursor = document.querySelector('.result-streaming, [class*="result-streaming"]');
-    if (streamingCursor && isElementVisible(streamingCursor)) return true;
-
+    
+    // Method 2: Check for streaming/thinking indicators
+    const streamSelectors = [
+      '.result-streaming',
+      '[class*="result-streaming"]',
+      'div[class*="streaming"]',
+      '[class*="thinking"]',
+      '[class*="loading-spinner"]'
+    ];
+    for (const sel of streamSelectors) {
+      const el = document.querySelector(sel);
+      if (el && isElementVisible(el)) return true;
+    }
+    
+    // Method 3: Check if send button is replaced by stop button
+    // When generating, the send button becomes a stop button
+    const composer = document.querySelector('div[class*="composer"]') || 
+                     document.querySelector('form');
+    if (composer) {
+      // Stop button has a square icon (rect SVG), send button has arrow
+      const rect = composer.querySelector('button svg rect');
+      if (rect && isElementVisible(rect.closest('button') || rect)) return true;
+    }
+    
     return false;
   }
 
