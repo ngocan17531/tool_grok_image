@@ -289,12 +289,73 @@ function forwardToFlowTab(msg) {
   });
 }
 
-// ── Handle Messages from Content Scripts ────────────────────────
+// ── Activity Log for Popup ──────────────────────────────────────
+
+let activityLogs = [];
+const MAX_LOGS = 50;
+
+function addLog(message, type = 'info') {
+  const now = new Date();
+  const time = now.toLocaleTimeString('vi-VN', { hour12: false });
+  activityLogs.unshift({ time, message, type });
+  if (activityLogs.length > MAX_LOGS) activityLogs.pop();
+  console.log(`[BulkAI] [${type}] ${message}`);
+}
+
+// ── Handle Messages from Content Scripts + Popup ────────────────
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // ─── Popup API ───
+  if (msg.action === 'get_status') {
+    sendResponse({
+      isConnected: ws && ws.readyState === WebSocket.OPEN,
+      isListening: true,
+      wsUrl: CONFIG.WS_URL,
+      reconnectAttempts: reconnectAttempts
+    });
+    return true;
+  }
+
+  if (msg.action === 'get_logs') {
+    sendResponse(activityLogs);
+    return true;
+  }
+
+  if (msg.action === 'toggle_listening') {
+    if (msg.value) {
+      connectWebSocket();
+      addLog('Bat che do lang nghe', 'info');
+    } else {
+      if (ws) { ws.close(); ws = null; }
+      addLog('Tat che do lang nghe', 'info');
+    }
+    sendResponse({
+      isConnected: ws && ws.readyState === WebSocket.OPEN,
+      isListening: msg.value,
+      wsUrl: CONFIG.WS_URL,
+      reconnectAttempts: reconnectAttempts
+    });
+    return true;
+  }
+
+  if (msg.action === 'update_ws_url') {
+    CONFIG.WS_URL = msg.url;
+    addLog('Cap nhat WS URL: ' + msg.url, 'info');
+    if (ws) { ws.close(); }
+    connectWebSocket();
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (msg.action === 'clear_logs') {
+    activityLogs = [];
+    sendResponse({ ok: true });
+    return true;
+  }
+
   // ─── ChatGPT responses ───
   if (msg.action === 'chatgpt_response') {
-    console.log('[BulkAI] ✅ Nhận response [' + msg.id + ']: ' + (msg.content || '').substring(0, 80) + '...');
+    addLog('Nhan response [' + msg.id + ']: ' + (msg.content || '').substring(0, 60) + '...', 'success');
     sendToServer({
       type: 'response',
       id: msg.id,
@@ -306,7 +367,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.action === 'chatgpt_error') {
-    console.error('[BulkAI] ✗ Lỗi ChatGPT [' + msg.id + ']: ' + msg.error);
+    addLog('Loi ChatGPT [' + msg.id + ']: ' + msg.error, 'error');
     sendToServer({
       type: 'error',
       id: msg.id,
@@ -317,7 +378,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.action === 'chatgpt_streaming') {
-    // Keepalive from content script during generation
     sendResponse({ ok: true });
     return true;
   }
@@ -335,6 +395,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 connectWebSocket();
 startKeepalive();
+addLog('Extension khoi dong', 'info');
 
 self.addEventListener('activate', () => {
   connectWebSocket();
