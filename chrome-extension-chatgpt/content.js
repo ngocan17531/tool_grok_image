@@ -353,11 +353,12 @@
           sendBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
           sendBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
           sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-        }
+          // Sau khi click button, chờ đủ để ChatGPT xử lý — KHÔNG gửi Enter thêm!
+          await sleep(1000);
 
-        // Method 2: Luôn thử thêm Enter key nếu send button chưa click được hoặc sau 1 lượt chưa thấy phản hồi
-        if (!isBtnEnabled || attempt >= 1) {
-          console.log(`[BulkAI] Thử gửi bằng phím Enter (attempt ${attempt + 1})`);
+        } else {
+          // Method 2: Enter key — CHỈ dùng khi button thực sự không click được (tránh nhá liên tục)
+          console.log(`[BulkAI] Button disabled, thử Enter (attempt ${attempt + 1})`);
           textarea.focus();
           const enterOpts = {
             key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
@@ -367,10 +368,10 @@
           textarea.dispatchEvent(new KeyboardEvent('keypress', enterOpts));
           await sleep(50);
           textarea.dispatchEvent(new KeyboardEvent('keyup', enterOpts));
+          await sleep(800);
         }
 
         // Kiểm tra xem đã gửi thành công chưa:
-        await sleep(500);
         const stopBtn = querySelector(SELECTORS.stopButton);
         const isStopVisible = stopBtn && isElementVisible(stopBtn);
         const textCleared = textarea && textarea.textContent.trim().length === 0;
