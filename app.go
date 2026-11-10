@@ -60,7 +60,7 @@ type GoogleFlowGenerateConfig struct {
 }
 
 // CurrentVersion is the current version of the application
-const CurrentVersion = "v1.1.7"
+const CurrentVersion = "v1.1.8"
 
 // GetAppVersion trả về version hiện tại để giao diện hiển thị (không ghi cứng trong frontend)
 func (a *App) GetAppVersion() string {

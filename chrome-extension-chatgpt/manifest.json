@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "BulkAI ChatGPT Bridge",
-  "version": "1.1.7",
+  "version": "1.1.8",
   "description": "Bridge between BulkAI PC App and ChatGPT Web for automated prompt/response extraction",
   "permissions": ["activeTab", "tabs", "scripting", "alarms", "debugger"],
   "host_permissions": [
