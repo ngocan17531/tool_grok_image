@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { GenerateImages, FetchSession, CheckSession, Logout, GetAlbumData, GetGalleryFolders, GetGalleryImages, GetGalleryImageList, GetImageFullBase64, DeleteImage, ExportGalleryReport, ExportCSV, DeleteAlbum, SelectDirectory, UpscaleImage, UpscaleFolder, CheckUpdate, ApplyUpdate, StartGrokChrome, StopGrokChrome, GetGrokChromeStatus, GenerateGrokImages, StartGoogleFlowChrome, StopGoogleFlowChrome, GetGoogleFlowChromeStatus, GenerateGoogleFlowImages, StopGoogleFlowGeneration, StartBridge, StopBridge, GetBridgeStatus, SendBridgePrompt, CancelBridgePrompt, GetAlbumTitles, ExportGalleryReportWithKeywords, ExportCSVWithKeywords, FixExcelTitles, FixAlbumData, SupabaseFetch } from "../wailsjs/go/main/App";
+import { GenerateImages, FetchSession, CheckSession, Logout, GetAlbumData, GetGalleryFolders, GetGalleryImages, GetGalleryImageList, GetImageFullBase64, DeleteImage, ExportGalleryReport, ExportCSV, DeleteAlbum, SelectDirectory, UpscaleImage, UpscaleFolder, CheckUpdate, ApplyUpdate, StartGrokChrome, StopGrokChrome, GetGrokChromeStatus, GenerateGrokImages, StartGoogleFlowChrome, StopGoogleFlowChrome, GetGoogleFlowChromeStatus, GenerateGoogleFlowImages, StopGoogleFlowGeneration, StartBridge, StopBridge, GetBridgeStatus, SendBridgePrompt, CancelBridgePrompt, GetAlbumTitles, ExportGalleryReportWithKeywords, ExportCSVWithKeywords, FixExcelTitles, FixAlbumData, SupabaseFetch, GetAppVersion } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import { LayoutDashboard, Settings, Image as ImageIcon, Zap, Terminal, ChevronRight, ChevronLeft, ChevronDown, CheckCircle2, Play, UserCircle, Trash2, FolderPlus, CheckSquare, Square, X, ExternalLink, Copy, FileSpreadsheet, Folder, Sparkles, Maximize, Download, FileText, MousePointerClick, Filter, Search } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
@@ -119,6 +119,10 @@ function createSupabaseClient(cfg) {
 
 function App() {
     const [activeTab, setActiveTab] = useState('generator');
+    const [appVersion, setAppVersion] = useState('');
+    useEffect(() => {
+        GetAppVersion().then(v => setAppVersion(v || '')).catch(() => { });
+    }, []);
     const [config, setConfig] = useState(() => {
         const saved = localStorage.getItem('bulkai_config');
         if (saved) {
@@ -2793,7 +2797,7 @@ ${bannedWords.map(w => `- "${w.banned}" → thay bằng "${w.replacement || '(b�
                                         <div>
                                             <h3 className="text-xl font-bold flex items-center gap-2">Cập nhật phần mềm {isUpdating && <Sparkles size={16} className="animate-spin text-accentEnd" />}</h3>
                                             <p className="text-sm text-textSoft mt-1">
-                                                Phiên bản hiện tại: <span className="text-accentEnd font-mono font-semibold">v1.1.2</span>
+                                                Phiên bản hiện tại: <span className="text-accentEnd font-mono font-semibold">{appVersion || '...'}</span>
                                                 {updateInfo && !updateInfo.has_update && <span className="ml-2 text-green-400 text-xs">✓ Đang dùng bản mới nhất</span>}
                                             </p>
                                         </div>
