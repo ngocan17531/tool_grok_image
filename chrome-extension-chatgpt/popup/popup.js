@@ -31,6 +31,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (status.isConnected) {
       statusBadge.classList.add('connected');
       statusText.textContent = 'Đã kết nối';
+    } else if (status.isListening && status.rejectedBusy) {
+      statusBadge.classList.add('disconnected');
+      statusText.textContent = 'App đang kết nối với extension BulkAI khác — hãy tắt bản kia';
     } else if (status.isListening) {
       statusBadge.classList.add('waiting');
       statusText.textContent = status.reconnectAttempts > 0

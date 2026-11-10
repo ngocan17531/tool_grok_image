@@ -14,8 +14,10 @@
   window.__bulkaiActiveInstance = INSTANCE_ID;
   window.__bulkaiCsInitialized = true;
 
-  const DEBOUNCE_DELAY = 3000; // ms — consider response complete after 3s of no DOM changes
-  const RESPONSE_TIMEOUT = 180000; // ms — max 3 minutes to wait for response
+  const DEBOUNCE_DELAY = 5000; // ms — consider response complete after 5s of no DOM changes
+  // Max 5 phút chờ ChatGPT trả lời (model thinking / danh sách prompt dài có thể >2 phút).
+  // Phải NHỎ HƠN BRIDGE_TIMEOUT_MS trong frontend/src/App.jsx để app nhận được kết quả/lỗi từ extension trước.
+  const RESPONSE_TIMEOUT = 300000;
   const POLLING_INTERVAL = 1500;   // ms — polling fallback interval
   const KEEPALIVE_INTERVAL = 5000; // ms — ping độc lập giữ SW khỏi bị kill
 
@@ -432,22 +434,22 @@
 
       console.log(`[BulkAI] Poll: newText=${newTextLen}, gen=${stillGen}, stable=${textStablePolls}, ${Math.round(elapsed / 1000)}s`);
 
-      // Case 1: New text appeared + not generating + stable
-      if (newTextLen > 20 && !stillGen && textStablePolls >= 1) {
-        console.log('[BulkAI] Polling: response complete (not generating + stable)');
+      // Case 1: New text appeared + not generating + stable for 6s (4 polls)
+      if (newTextLen > 50 && !stillGen && textStablePolls >= 4) {
+        console.log('[BulkAI] Polling: response complete (not generating + stable 6s)');
         finishResponse('success');
         return;
       }
 
-      // Case 2: Text stable for 4.5s+ with substantial new text
-      if (newTextLen > 20 && textStablePolls >= 3 && elapsed > 5000) {
-        console.log('[BulkAI] Polling: text stable 4.5s+');
+      // Case 2: Text stable for 7.5s+ with substantial new text
+      if (newTextLen > 50 && textStablePolls >= 5 && elapsed > 8000) {
+        console.log('[BulkAI] Polling: text stable 7.5s+');
         finishResponse('success');
         return;
       }
 
-      // Case 3: Safety net after 20s — if ANY new text appeared and stable
-      if (elapsed > 20000 && newTextLen > 10 && textStablePolls >= 1) {
+      // Case 3: Safety net after 30s — if ANY new text appeared and stable 4.5s
+      if (elapsed > 30000 && newTextLen > 50 && textStablePolls >= 3) {
         console.warn('[BulkAI] Safety-net: force finishResponse');
         finishResponse('success');
         return;
@@ -486,6 +488,48 @@
     if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
   }
 
+  function getLastAssistantHTML() {
+    // Strategy 1: Find assistant messages by data-message-author-role
+    const byRole = document.querySelectorAll('[data-message-author-role="assistant"]');
+    if (byRole.length > 0) {
+      const lastMsg = byRole[byRole.length - 1];
+      // Try to get the markdown content div inside
+      const markdownDiv = lastMsg.querySelector('.markdown, [class*="markdown"], .prose, [class*="prose"]');
+      if (markdownDiv) return markdownDiv.innerHTML;
+      return lastMsg.innerHTML;
+    }
+
+    // Strategy 2: Find by "ChatGPT đã nói:" / "ChatGPT said:" headers
+    // Look for the content container following the last such header
+    const allEls = document.querySelectorAll('div, span, h3, h4, h5, h6, p');
+    let lastHeader = null;
+    for (const el of allEls) {
+      const t = (el.textContent || '').trim();
+      if (t === 'ChatGPT đã nói:' || t === 'ChatGPT said:' || t === 'ChatGPT đã nói' || t === 'ChatGPT said') {
+        lastHeader = el;
+      }
+    }
+    if (lastHeader) {
+      // Walk up to find the message container, then find the content div
+      let container = lastHeader.closest('article') || lastHeader.closest('[data-message-id]');
+      if (!container) {
+        // Walk up a few levels and look for markdown content
+        container = lastHeader.parentElement;
+        for (let i = 0; i < 5 && container; i++) {
+          const md = container.querySelector('.markdown, [class*="markdown"], .prose, [class*="prose"]');
+          if (md) return md.innerHTML;
+          container = container.parentElement;
+        }
+      } else {
+        const md = container.querySelector('.markdown, [class*="markdown"], .prose, [class*="prose"]');
+        if (md) return md.innerHTML;
+        return container.innerHTML;
+      }
+    }
+
+    return '';
+  }
+
   function finishResponse(status) {
     stopResponseObserver();
 
@@ -493,64 +537,33 @@
     isProcessing = false;
     currentPromptId = null;
 
-    // Lấy TEXT MỚI — chỉ phần xuất hiện SAU injection
-    const mainEl = document.querySelector('main') || document.body;
-    const currentFullText = mainEl.innerText || '';
-    let responseText = '';
+    // Ưu tiên lấy innerHTML từ assistant message cuối cùng
+    // để giữ nguyên cấu trúc HTML (heading, paragraph) cho parsing chính xác
+    let responseText = getLastAssistantHTML();
 
-    if (currentFullText.length > pageTextLenBefore + 10) {
-      // Có text mới — lấy phần sau pageTextLenBefore
-      const newText = currentFullText.substring(pageTextLenBefore);
-      
-      // Tìm phần response cuối cùng (sau "ChatGPT đã nói:" hoặc "ChatGPT said:")
-      const parts = newText.split(/ChatGPT (?:đã nói|said):?\s*/);
-      if (parts.length > 1) {
-        // Lấy phần cuối = response mới nhất
-        let lastPart = parts[parts.length - 1].trim();
-        // Cắt bỏ "Bạn đã nói:" phía sau (nếu có prompt tiếp theo)
-        const userIdx = lastPart.search(/(?:Bạn (?:đã nói|said):?|You said:?)/);
-        if (userIdx > 0) lastPart = lastPart.substring(0, userIdx).trim();
-        // Bỏ button text
-        lastPart = lastPart
-          .replace(/\n(Sao chép|Copy|Đọc to|Read aloud|Tạo lại câu trả lời|Regenerate|Hành động khác|More actions|Xem thêm|See more)\s*$/gi, '')
-          .trim();
-        responseText = lastPart;
-      } else {
-        // Không tìm thấy header → lấy toàn bộ text mới
-        responseText = newText.trim();
-        // Bỏ button text
-        responseText = responseText
-          .replace(/\n(Sao chép|Copy|Đọc to|Read aloud|Tạo lại câu trả lời|Regenerate|Hành động khác|More actions|Xem thêm|See more)\s*$/gi, '')
-          .trim();
-      }
-    }
-
-    // Fallback: nếu vẫn empty, thử getLastAssistantText()
+    // Fallback: nếu không lấy được HTML, thử lấy text
     if (!responseText) {
       responseText = getLastAssistantText();
     }
 
-    console.log(`[BulkAI] finishResponse: status=${status}, promptId=${promptId}, textLen=${responseText.length}`);
+    // Bỏ button text nếu lẫn vào
+    if (responseText) {
+      responseText = responseText
+        .replace(/<button[^>]*>[\s\S]*?<\/button>/gi, '')
+        .replace(/\n(Sao chép|Copy|Đọc to|Read aloud|Tạo lại câu trả lời|Regenerate|Hành động khác|More actions|Xem thêm|See more)\s*$/gi, '')
+        .trim();
+    }
 
-    if (responseText && status === 'success') {
+    console.log(`[BulkAI] finishResponse: status=${status}, promptId=${promptId}, textLen=${(responseText||'').length}`);
+
+    if (responseText && (status === 'success' || status === 'TIMEOUT')) {
+      // TIMEOUT mà vẫn có nội dung (thường do nhận diện "đang generate" bị nhầm) → vẫn trả về
+      if (status === 'TIMEOUT') console.warn('[BulkAI] Timeout nhưng có nội dung — trả về nội dung hiện có');
       sendResponseToBackground(promptId, responseText, 'success');
     } else if (!responseText && status === 'success') {
-      // Retry: wait 2s
+      // Retry: wait 3s
       setTimeout(() => {
-        const mainEl2 = document.querySelector('main') || document.body;
-        const retryFullText = mainEl2.innerText || '';
-        let retryText = '';
-        if (retryFullText.length > pageTextLenBefore + 10) {
-          const newText = retryFullText.substring(pageTextLenBefore);
-          const parts = newText.split(/ChatGPT (?:đã nói|said):?\s*/);
-          if (parts.length > 1) {
-            retryText = parts[parts.length - 1].trim();
-            const userIdx = retryText.search(/(?:Bạn (?:đã nói|said):?|You said:?)/);
-            if (userIdx > 0) retryText = retryText.substring(0, userIdx).trim();
-          } else {
-            retryText = newText.trim();
-          }
-        }
+        let retryText = getLastAssistantHTML();
         if (!retryText) retryText = getLastAssistantText();
         
         console.log(`[BulkAI] Retry: textLen=${(retryText||'').length}`);
@@ -559,7 +572,7 @@
         } else {
           sendResponseToBackground(promptId, '', 'NO_RESPONSE');
         }
-      }, 2000);
+      }, 3000);
     } else {
       sendResponseToBackground(promptId, '', status);
     }

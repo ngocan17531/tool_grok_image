@@ -60,7 +60,7 @@ type GoogleFlowGenerateConfig struct {
 }
 
 // CurrentVersion is the current version of the application
-const CurrentVersion = "v1.1.2"
+const CurrentVersion = "v1.1.7"
 
 // isNewerVersion returns true if remote version is strictly newer than current.
 // Expects versions in "vX.Y.Z" format.
@@ -258,8 +258,9 @@ func (a *App) FixAlbumData(outputDir string, albumID string) string {
 
 // GalleryFolder represents an album folder
 type GalleryFolder struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	HasExcel bool   `json:"hasExcel"` // album đã có file report_<album>.xlsx chưa
 }
 
 // GetGalleryFolders returns a list of albums in the output directory
@@ -274,9 +275,13 @@ func (a *App) GetGalleryFolders(outputDir string) []GalleryFolder {
 	}
 	for _, entry := range entries {
 		if entry.IsDir() {
+			albumPath := filepath.Join(outputDir, entry.Name())
+			excelPath := filepath.Join(albumPath, fmt.Sprintf("report_%s.xlsx", entry.Name()))
+			_, statErr := os.Stat(excelPath)
 			folders = append(folders, GalleryFolder{
-				Name: entry.Name(),
-				Path: filepath.Join(outputDir, entry.Name()),
+				Name:     entry.Name(),
+				Path:     albumPath,
+				HasExcel: statErr == nil,
 			})
 		}
 	}
@@ -1124,23 +1129,28 @@ func (a *App) Greet(name string) string {
 // Bridge Functions (ChatGPT Extension WebSocket)
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// StartBridge khá»Ÿi Ä‘á»™ng WebSocket server cho extension
-func (a *App) StartBridge() string {
-	if a.bridge != nil && a.bridge.IsRunning() {
-		return "already_running"
+// ensureBridge tạo Bridge (nếu chưa có) với đầy đủ callback.
+// ChatGPT và Google Flow dùng CHUNG 1 bridge (port 8765), nên mọi thay đổi trạng thái
+// phải emit cho cả 2 UI — nếu không, bridge tạo từ nút ChatGPT sẽ không bao giờ báo
+// "Extension đã kết nối" cho Google Flow (và ngược lại).
+func (a *App) ensureBridge() {
+	if a.bridge != nil {
+		return
 	}
-
 	a.bridge = bridge.New()
-
-	// Callback khi status thay Ä‘á»•i â†’ emit event tá»›i frontend
 	a.bridge.SetOnStatusChange(func(running bool, connected bool) {
 		runtime.EventsEmit(a.ctx, "bridge_status", map[string]interface{}{
 			"running":   running,
 			"connected": connected,
 		})
+		if connected {
+			runtime.EventsEmit(a.ctx, "gflow_chrome_status", "running")
+		} else if running {
+			runtime.EventsEmit(a.ctx, "gflow_chrome_status", "waiting")
+		} else {
+			runtime.EventsEmit(a.ctx, "gflow_chrome_status", "stopped")
+		}
 	})
-
-	// Callback khi nháº­n response tá»« ChatGPT
 	a.bridge.SetOnResponse(func(id string, content string, status string) {
 		runtime.EventsEmit(a.ctx, "bridge_response", map[string]interface{}{
 			"id":      id,
@@ -1148,6 +1158,21 @@ func (a *App) StartBridge() string {
 			"status":  status,
 		})
 	})
+	a.bridge.SetOnFlowProgress(func(id string, status string, message string) {
+		runtime.EventsEmit(a.ctx, "gflow_log", map[string]interface{}{
+			"msg":  fmt.Sprintf("[%s] %s", status, message),
+			"type": "info",
+		})
+	})
+}
+
+// StartBridge khá»Ÿi Ä‘á»™ng WebSocket server cho extension
+func (a *App) StartBridge() string {
+	if a.bridge != nil && a.bridge.IsRunning() {
+		return "already_running"
+	}
+
+	a.ensureBridge()
 
 	if err := a.bridge.Start(); err != nil {
 		return "error: " + err.Error()
@@ -1362,36 +1387,7 @@ func (a *App) GenerateGrokImages(cfg GrokGenerateConfig) string {
 func (a *App) StartGoogleFlowChrome(flowURL string) string {
 	// Google Flow giá» dÃ¹ng Bridge WebSocket + Chrome Extension
 	// KhÃ´ng cáº§n má»Ÿ Chrome riÃªng ná»¯a â€” dÃ¹ng Chrome thÆ°á»ng cá»§a user
-	if a.bridge == nil {
-		a.bridge = bridge.New()
-		a.bridge.SetOnStatusChange(func(running bool, connected bool) {
-			runtime.EventsEmit(a.ctx, "bridge_status", map[string]interface{}{
-				"running":   running,
-				"connected": connected,
-			})
-			// Cáº­p nháº­t Google Flow status dá»±a trÃªn bridge
-			if connected {
-				runtime.EventsEmit(a.ctx, "gflow_chrome_status", "running")
-			} else if running {
-				runtime.EventsEmit(a.ctx, "gflow_chrome_status", "waiting")
-			} else {
-				runtime.EventsEmit(a.ctx, "gflow_chrome_status", "stopped")
-			}
-		})
-		a.bridge.SetOnResponse(func(id string, content string, status string) {
-			runtime.EventsEmit(a.ctx, "bridge_response", map[string]interface{}{
-				"id":      id,
-				"content": content,
-				"status":  status,
-			})
-		})
-		a.bridge.SetOnFlowProgress(func(id string, status string, message string) {
-			runtime.EventsEmit(a.ctx, "gflow_log", map[string]interface{}{
-				"msg":  fmt.Sprintf("[%s] %s", status, message),
-				"type": "info",
-			})
-		})
-	}
+	a.ensureBridge()
 
 	if a.bridge.IsRunning() {
 		if a.bridge.IsExtensionConnected() {
@@ -1404,8 +1400,7 @@ func (a *App) StartGoogleFlowChrome(flowURL string) string {
 		return "Error: " + err.Error()
 	}
 	a.bridge.StartHeartbeat()
-
-	runtime.EventsEmit(a.ctx, "gflow_chrome_status", "waiting")
+	// Không emit "waiting" ở đây: extension có thể đã kết nối ngay khi port mở
 	log.Println("GoogleFlow: Bridge WebSocket server Ä‘Ã£ cháº¡y trÃªn port 8765. Chá» Chrome Extension káº¿t ná»‘i...")
 	return "Started"
 }

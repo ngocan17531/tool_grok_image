@@ -5,9 +5,11 @@
 
 const CONFIG = {
   WS_URL: 'ws://127.0.0.1:8765',
-  RECONNECT_DELAY: 3000,
-  MAX_RECONNECT: 100,
-  HEARTBEAT_INTERVAL: 10000
+  RECONNECT_DELAY: 2000,
+  MAX_RECONNECT_DELAY: 5000, // Không bao giờ bỏ cuộc — app có thể bật Bridge bất cứ lúc nào
+  HEARTBEAT_INTERVAL: 10000,
+  CLOSE_CODE_BUSY: 4001,     // khớp closeCodeBusy trong pkg/bridge/bridge.go
+  BUSY_RETRY_DELAY: 30000
 };
 
 const CHATGPT_URLS = ['https://chatgpt.com/*', 'https://chat.openai.com/*'];
@@ -17,6 +19,7 @@ let ws = null;
 let reconnectTimer = null;
 let heartbeatTimer = null;
 let reconnectAttempts = 0;
+let rejectedBusy = false; // app đã từ chối vì đang kết nối với extension khác
 let pendingMessages = []; // Buffer khi WS chưa kết nối
 
 // ── Keepalive Alarm (chống MV3 SW bị kill) ─────────────────────
@@ -43,11 +46,6 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 function connectWebSocket() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
 
-  if (reconnectAttempts >= CONFIG.MAX_RECONNECT) {
-    console.log('[BulkAI] Quá số lần reconnect');
-    return;
-  }
-
   try {
     console.log('[BulkAI] Đang kết nối WebSocket...');
     ws = new WebSocket(CONFIG.WS_URL);
@@ -55,6 +53,7 @@ function connectWebSocket() {
     ws.onopen = () => {
       console.log('[BulkAI] ✅ Đã kết nối WebSocket tới BulkAI app');
       reconnectAttempts = 0;
+      rejectedBusy = false;
       clearReconnectTimer();
       startHeartbeat();
       startKeepalive();
@@ -79,10 +78,20 @@ function connectWebSocket() {
       }
     };
 
-    ws.onclose = () => {
-      console.log('[BulkAI] WebSocket đã đóng');
+    const thisWs = ws;
+    ws.onclose = (event) => {
+      console.log('[BulkAI] WebSocket đã đóng (code=' + event.code + ')');
+      if (ws !== thisWs) return; // socket cũ (đã bị thay) — bỏ qua
       ws = null;
       stopHeartbeat();
+      if (event.code === CONFIG.CLOSE_CODE_BUSY) {
+        rejectedBusy = true;
+        // App đã có extension khác kết nối (bản cài khác / profile Chrome khác) — chờ lâu rồi thử lại
+        addLog('App dang ket noi voi extension khac — thu lai sau ' + (CONFIG.BUSY_RETRY_DELAY / 1000) + 's', 'warn');
+        clearReconnectTimer();
+        reconnectTimer = setTimeout(() => connectWebSocket(), CONFIG.BUSY_RETRY_DELAY);
+        return;
+      }
       scheduleReconnect();
     };
 
@@ -98,7 +107,7 @@ function connectWebSocket() {
 function scheduleReconnect() {
   clearReconnectTimer();
   reconnectAttempts++;
-  const delay = Math.min(CONFIG.RECONNECT_DELAY * reconnectAttempts, 15000);
+  const delay = Math.min(CONFIG.RECONNECT_DELAY * reconnectAttempts, CONFIG.MAX_RECONNECT_DELAY);
   reconnectTimer = setTimeout(() => connectWebSocket(), delay);
 }
 
@@ -159,6 +168,7 @@ function handleServerMessage(msg) {
       // Frontend yêu cầu hủy prompt đang xử lý
       console.log('[BulkAI] Cancel prompt request');
       sendCancelToChatGPT();
+      sendCancelToFlow();
       break;
 
     case 'generate_flow':
@@ -177,6 +187,15 @@ async function sendCancelToChatGPT() {
     const tabs = await chrome.tabs.query({ url: CHATGPT_URLS });
     if (tabs.length > 0) {
       await chrome.tabs.sendMessage(tabs[0].id, { action: 'force_reset' });
+    }
+  } catch (_) {}
+}
+
+async function sendCancelToFlow() {
+  try {
+    const tabs = await chrome.tabs.query({ url: FLOW_URLS });
+    for (const tab of tabs) {
+      await chrome.tabs.sendMessage(tab.id, { action: 'force_reset' }).catch(() => {});
     }
   } catch (_) {}
 }
@@ -263,30 +282,102 @@ async function forwardPromptToChatGPT(promptData) {
 
 // ── Forward Google Flow prompt ──────────────────────────────────
 
-function forwardToFlowTab(msg) {
-  chrome.tabs.query({ url: FLOW_URLS }, (tabs) => {
-    if (tabs.length === 0) {
+async function forwardToFlowTab(msg) {
+  try {
+    const tabs = await chrome.tabs.query({ url: FLOW_URLS });
+    if (!tabs || tabs.length === 0) {
       console.warn('[BulkAI] Không tìm thấy tab Google Flow!');
       sendToServer({
         type: 'flow_error',
         id: msg.id,
-        error: 'Không tìm thấy tab Google Flow.'
+        error: 'Không tìm thấy tab Google Flow. Vui lòng mở https://flow.google.com hoặc https://labs.google/fx/tools/flow.'
       });
       return;
     }
 
-    const tab = tabs.find(t => t.url && t.url.startsWith('https://flow.google.com/')) || tabs[0];
-    chrome.tabs.sendMessage(tab.id, msg, (response) => {
-      if (chrome.runtime.lastError) {
-        console.error('[BulkAI] Lỗi gửi tới Flow:', chrome.runtime.lastError.message);
-        sendToServer({
-          type: 'flow_error',
-          id: msg.id,
-          error: chrome.runtime.lastError.message
-        });
+    const tab = tabs.find(t => t.url && t.url.includes('flow.google.com')) ||
+                tabs.find(t => t.url && t.url.includes('labs.google/fx')) ||
+                tabs[0];
+
+    // Focus tab Google Flow để Chrome không throttle JS timers khi ở tab khác
+    try {
+      if (tab.windowId) {
+        await chrome.windows.update(tab.windowId, { focused: true });
       }
+      await chrome.tabs.update(tab.id, { active: true });
+      await new Promise(r => setTimeout(r, 300));
+    } catch (e) {
+      console.warn('[BulkAI] Không thể focus tab Flow:', e.message);
+    }
+
+    // Đảm bảo content_flow.js đã được inject
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['content_flow.js']
+      });
+      await new Promise(r => setTimeout(r, 400));
+    } catch (injectErr) {
+      console.log('[BulkAI] Script already present or inject skipped:', injectErr.message);
+    }
+
+    // Gửi prompt có retry 3 lần
+    let lastErr = null;
+    for (let i = 0; i < 3; i++) {
+      if (i > 0) await new Promise(r => setTimeout(r, 500 * i));
+      try {
+        await chrome.tabs.sendMessage(tab.id, msg);
+        console.log('[BulkAI] Đã gửi flow prompt tới tab (attempt ' + (i + 1) + ')');
+        lastErr = null;
+        break;
+      } catch (err) {
+        lastErr = err;
+        console.warn('[BulkAI] Lần ' + (i + 1) + ' gửi flow prompt thất bại:', err.message);
+      }
+    }
+
+    if (lastErr) {
+      sendToServer({
+        type: 'flow_error',
+        id: msg.id,
+        error: 'Lỗi gửi tới Google Flow: ' + lastErr.message
+      });
+    }
+  } catch (err) {
+    sendToServer({
+      type: 'flow_error',
+      id: msg.id,
+      error: 'Lỗi tab Flow: ' + err.message
     });
-  });
+  }
+}
+
+// ── Trusted input via chrome.debugger ──────────────────────────
+
+async function withDebugger(tabId, fn) {
+  const target = { tabId };
+  await chrome.debugger.attach(target, '1.3');
+  const send = (method, params) => chrome.debugger.sendCommand(target, method, params);
+  try {
+    await fn(send);
+  } finally {
+    try { await chrome.debugger.detach(target); } catch (_) {}
+  }
+}
+
+async function trustedClick(send, x, y) {
+  const base = { x, y, button: 'left', clickCount: 1 };
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
+  await new Promise(r => setTimeout(r, 60));
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
+}
+
+async function trustedEnter(send) {
+  const key = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
+  await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...key });
+  await send('Input.dispatchKeyEvent', { type: 'char', text: '\r', ...key });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', ...key });
 }
 
 // ── Activity Log for Popup ──────────────────────────────────────
@@ -311,7 +402,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       isConnected: ws && ws.readyState === WebSocket.OPEN,
       isListening: true,
       wsUrl: CONFIG.WS_URL,
-      reconnectAttempts: reconnectAttempts
+      reconnectAttempts: reconnectAttempts,
+      rejectedBusy: rejectedBusy
     });
     return true;
   }
@@ -333,7 +425,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       isConnected: ws && ws.readyState === WebSocket.OPEN,
       isListening: msg.value,
       wsUrl: CONFIG.WS_URL,
-      reconnectAttempts: reconnectAttempts
+      reconnectAttempts: reconnectAttempts,
+      rejectedBusy: rejectedBusy
     });
     return true;
   }
@@ -379,6 +472,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.action === 'chatgpt_streaming') {
     sendResponse({ ok: true });
+    return true;
+  }
+
+  // ─── Google Flow: trusted input (isTrusted=true) qua chrome.debugger ───
+  // Dùng khi JS click() không kích hoạt được nút Generate của Flow
+  if (msg.action === 'flow_trusted_click' || msg.action === 'flow_trusted_enter') {
+    const tabId = sender.tab && sender.tab.id;
+    if (!tabId) { sendResponse({ ok: false, error: 'no tab' }); return true; }
+    const run = msg.action === 'flow_trusted_click'
+      ? (send) => trustedClick(send, msg.x, msg.y)
+      : (send) => trustedEnter(send);
+    withDebugger(tabId, run)
+      .then(() => sendResponse({ ok: true }))
+      .catch((e) => sendResponse({ ok: false, error: (e && e.message) || String(e) }));
     return true;
   }
 

@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "BulkAI Bridge",
-  "version": "1.1.2",
+  "version": "1.1.7",
   "description": "Kết nối BulkAI app với ChatGPT (keywords) và Google Flow (ảnh)",
-  "permissions": ["activeTab", "tabs", "scripting", "alarms"],
+  "permissions": ["activeTab", "tabs", "scripting", "alarms", "debugger"],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",

@@ -1,10 +1,121 @@
-import { useState, useEffect, useRef } from 'react';
-import { GenerateImages, FetchSession, CheckSession, Logout, GetAlbumData, GetGalleryFolders, GetGalleryImages, GetGalleryImageList, GetImageFullBase64, DeleteImage, ExportGalleryReport, ExportCSV, DeleteAlbum, SelectDirectory, UpscaleImage, UpscaleFolder, CheckUpdate, ApplyUpdate, StartGrokChrome, StopGrokChrome, GetGrokChromeStatus, GenerateGrokImages, StartGoogleFlowChrome, StopGoogleFlowChrome, GetGoogleFlowChromeStatus, GenerateGoogleFlowImages, StopGoogleFlowGeneration, StartBridge, StopBridge, GetBridgeStatus, SendBridgePrompt, CancelBridgePrompt, GetAlbumTitles, ExportGalleryReportWithKeywords, ExportCSVWithKeywords, FixExcelTitles, FixAlbumData } from "../wailsjs/go/main/App";
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { GenerateImages, FetchSession, CheckSession, Logout, GetAlbumData, GetGalleryFolders, GetGalleryImages, GetGalleryImageList, GetImageFullBase64, DeleteImage, ExportGalleryReport, ExportCSV, DeleteAlbum, SelectDirectory, UpscaleImage, UpscaleFolder, CheckUpdate, ApplyUpdate, StartGrokChrome, StopGrokChrome, GetGrokChromeStatus, GenerateGrokImages, StartGoogleFlowChrome, StopGoogleFlowChrome, GetGoogleFlowChromeStatus, GenerateGoogleFlowImages, StopGoogleFlowGeneration, StartBridge, StopBridge, GetBridgeStatus, SendBridgePrompt, CancelBridgePrompt, GetAlbumTitles, ExportGalleryReportWithKeywords, ExportCSVWithKeywords, FixExcelTitles, FixAlbumData, SupabaseFetch } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL } from "../wailsjs/runtime/runtime";
-import { LayoutDashboard, Settings, Image as ImageIcon, Zap, Terminal, ChevronRight, ChevronLeft, ChevronDown, CheckCircle2, Play, UserCircle, Trash2, FolderPlus, CheckSquare, Square, X, ExternalLink, Copy, FileSpreadsheet, Folder, Sparkles, Maximize, Download, FileText, MousePointerClick } from 'lucide-react';
+import { LayoutDashboard, Settings, Image as ImageIcon, Zap, Terminal, ChevronRight, ChevronLeft, ChevronDown, CheckCircle2, Play, UserCircle, Trash2, FolderPlus, CheckSquare, Square, X, ExternalLink, Copy, FileSpreadsheet, Folder, Sparkles, Maximize, Download, FileText, MousePointerClick, Filter, Search } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import './App.css';
 import logo from './assets/logo.svg';
+
+
+// Tạo 1 Supabase client.
+// - publishableKey: Publishable key (sb_publishable_..., thay cho anon/public cũ) — gọi thẳng từ WebView.
+// - secretKey: Secret key (sb_secret_..., thay cho service_role cũ) — nếu có thì ưu tiên dùng.
+//   Supabase từ chối secret key khi request đến từ trình duyệt (kể cả WebView của app),
+//   nên mọi request lúc đó được chuyển qua backend Go (SupabaseFetch) để gửi.
+function createSingleSupabaseClient(rawUrl, rawPublishableKey, rawSecretKey) {
+    const url = (rawUrl || '').trim();
+    const secretKey = (rawSecretKey || '').trim();
+    const publishableKey = (rawPublishableKey || '').trim();
+    if (!url || (!secretKey && !publishableKey)) return null;
+
+    if (!secretKey) return createClient(url, publishableKey);
+
+    const backendFetch = async (input, init = {}) => {
+        const req = new Request(input, init);
+        const headers = {};
+        req.headers.forEach((v, k) => { headers[k] = v; });
+        const body = req.method === 'GET' || req.method === 'HEAD' ? '' : await req.text();
+        const res = await SupabaseFetch({ baseUrl: url, url: req.url, method: req.method, headers, body });
+        if (res.error) throw new TypeError('Supabase: ' + res.error);
+        const noBody = [101, 204, 205, 304].includes(res.status);
+        return new Response(noBody ? null : res.body, { status: res.status, headers: res.headers });
+    };
+    return createClient(url, secretKey, {
+        global: { fetch: backendFetch },
+        auth: { persistSession: false, autoRefreshToken: false },
+    });
+}
+
+// Nơi báo lỗi ghi Supabase backup — App gán hàm addLog vào đây
+let onSupabaseBackupError = (msg) => console.warn(msg);
+
+const SUPABASE_WRITE_METHODS = ['insert', 'upsert', 'update', 'delete'];
+
+// Bọc 1 query builder: ghi lại chuỗi lệnh (from → insert → eq ...) để khi chạy xong trên
+// Supabase chính thì lặp lại y hệt trên Supabase backup.
+function mirrorQuery(builder, table, calls, ctx) {
+    return new Proxy(builder, {
+        get(target, prop) {
+            if (prop === 'then') {
+                return (resolve, reject) => runMirroredQuery(target, table, calls, ctx).then(resolve, reject);
+            }
+            const value = target[prop];
+            if (typeof value !== 'function') return value;
+            return (...args) => mirrorQuery(value.apply(target, args), table, [...calls, [prop, args]], ctx);
+        },
+    });
+}
+
+async function runMirroredQuery(builder, table, calls, ctx) {
+    const writeMethod = calls.map(c => c[0]).find(m => SUPABASE_WRITE_METHODS.includes(m));
+    if (!writeMethod) return builder; // chỉ đọc → chỉ đọc từ Supabase chính
+
+    if (writeMethod === 'insert' || writeMethod === 'upsert') {
+        // Lấy lại các dòng vừa thêm (kèm id do Supabase chính sinh) rồi upsert y hệt sang backup,
+        // để các lệnh update/delete theo id sau này khớp ở cả 2 DB
+        const hasSelect = calls.some(c => c[0] === 'select');
+        const result = await (hasSelect ? builder : builder.select());
+        if (!result.error && result.data) {
+            const rows = Array.isArray(result.data) ? result.data : [result.data];
+            if (rows.length > 0) {
+                queueBackupWrite(ctx, table, `${writeMethod} ${rows.length} dòng`,
+                    () => ctx.backup.from(table).upsert(rows));
+            }
+        }
+        return result;
+    }
+
+    // update / delete: chạy trên DB chính, thành công thì lặp lại nguyên chuỗi lệnh trên backup
+    const result = await builder;
+    if (!result.error) {
+        queueBackupWrite(ctx, table, writeMethod, () => {
+            let q = ctx.backup.from(table);
+            for (const [method, args] of calls) q = q[method](...args);
+            return q;
+        });
+    }
+    return result;
+}
+
+// Ghi backup tuần tự (giữ đúng thứ tự như DB chính), không chặn công việc chính
+function queueBackupWrite(ctx, table, label, run) {
+    ctx.queue = ctx.queue.then(async () => {
+        try {
+            const { error } = await run();
+            if (error) onSupabaseBackupError(`Supabase backup lỗi (${table} ${label}): ${error.message}`);
+        } catch (e) {
+            onSupabaseBackupError(`Supabase backup lỗi (${table} ${label}): ${e.message || e}`);
+        }
+    });
+}
+
+// Tạo Supabase client từ config. Nếu có cấu hình Supabase 2 (backup) thì mọi thao tác ghi
+// được ghi song song sang backup; đọc vẫn chỉ từ Supabase chính.
+function createSupabaseClient(cfg) {
+    const primary = createSingleSupabaseClient(cfg.supabaseUrl, cfg.supabaseKey, cfg.supabaseSecretKey);
+    if (!primary) return null;
+    const backup = createSingleSupabaseClient(cfg.supabaseBackupUrl, cfg.supabaseBackupKey, cfg.supabaseBackupSecretKey);
+    if (!backup) return primary;
+
+    const ctx = { backup, queue: Promise.resolve() };
+    return new Proxy(primary, {
+        get(target, prop) {
+            if (prop === 'from') return (table) => mirrorQuery(target.from(table), table, [], ctx);
+            const value = target[prop];
+            return typeof value === 'function' ? value.bind(target) : value;
+        },
+    });
+}
 
 function App() {
     const [activeTab, setActiveTab] = useState('generator');
@@ -29,7 +140,12 @@ function App() {
             openaiKey: '',
             geminiKey: '',
             supabaseUrl: '',
-            supabaseKey: '',
+            supabaseKey: '',       // Publishable key
+            supabaseSecretKey: '', // Secret key (tuỳ chọn)
+            // Supabase 2 (backup): ghi song song mọi thay đổi
+            supabaseBackupUrl: '',
+            supabaseBackupKey: '',
+            supabaseBackupSecretKey: '',
             // Grok-specific
             grokRatio: '1:1',
             grokCount: 2,
@@ -103,6 +219,9 @@ function App() {
     const bridgeWaitingTimeoutRef = useRef(null); // Timeout auto-stop bridge
     // Global map lưu pending bridge callbacks theo requestId (fix race condition EventsOn)
     const bridgePendingRef = useRef({}); // { [requestId]: { resolve, reject, timeoutId } }
+    // Thời gian app chờ extension trả lời. Phải LỚN HƠN RESPONSE_TIMEOUT (5 phút) trong content.js
+    // của extension, để extension tự trả kết quả/lỗi trước thay vì app bỏ cuộc giữa chừng.
+    const BRIDGE_TIMEOUT_MS = 6 * 60 * 1000;
     const [promptDynamic, setPromptDynamic] = useState("");
 
 
@@ -120,6 +239,10 @@ function App() {
     const [isLoadingModalPrompts, setIsLoadingModalPrompts] = useState(false);
     const [selectedModalPromptIds, setSelectedModalPromptIds] = useState([]);
     const [promptSortStatus, setPromptSortStatus] = useState('default'); // 'default' | 'unused_first' | 'used_first'
+    const [modalPromptFilter, setModalPromptFilter] = useState('all'); // 'all' | 'not_run' | 'run'
+    const [modalPromptLimit, setModalPromptLimit] = useState(25); // 25, 50, 75, 100
+    const [modalPromptPage, setModalPromptPage] = useState(1);
+    const [modalPromptSearch, setModalPromptSearch] = useState('');
     const [selectedManageIdeaIds, setSelectedManageIdeaIds] = useState([]); // Cho bảng Quản lý Ý tưởng
     const [ideaPage, setIdeaPage] = useState(1);
     const itemsPerPage = 10;
@@ -153,9 +276,12 @@ function App() {
         return () => EventsOff("upscale_progress");
     }, []);
 
-    const supabase = config.supabaseUrl && config.supabaseKey
-        ? createClient(config.supabaseUrl, config.supabaseKey)
-        : null;
+    const supabase = useMemo(
+        () => createSupabaseClient(config),
+        [config.supabaseUrl, config.supabaseKey, config.supabaseSecretKey,
+         config.supabaseBackupUrl, config.supabaseBackupKey, config.supabaseBackupSecretKey]
+    );
+    onSupabaseBackupError = (msg) => addLog(msg, 'warning');
 
     useEffect(() => {
         if (activeTab === 'gallery') {
@@ -302,7 +428,7 @@ function App() {
             fetchCategories();
             fetchIdeas();
         }
-    }, [config.supabaseUrl, config.supabaseKey]);
+    }, [config.supabaseUrl, config.supabaseKey, config.supabaseSecretKey]);
 
     useEffect(() => {
         setIdeaPage(1);
@@ -439,6 +565,7 @@ function App() {
             alert("Lỗi: " + e.message);
         } finally {
             setIsExportingExcel(false);
+            fetchGalleryFolders(); // cập nhật dấu "đã có Excel" trong danh sách album
         }
     };
 
@@ -473,8 +600,8 @@ Rules:
                 delete bridgePendingRef.current[requestId];
                 // Gửi cancel để reset content.js state trước khi reject
                 try { await CancelBridgePrompt(); } catch (_) {}
-                reject(new Error("Quá thời gian chờ (2 phút)"));
-            }, 120000);
+                reject(new Error("Quá thời gian chờ (6 phút)"));
+            }, BRIDGE_TIMEOUT_MS);
 
             // Đăng ký callback vào global pending map (không dùng EventsOn để tránh ghi đè)
             bridgePendingRef.current[requestId] = {
@@ -664,6 +791,7 @@ Rules:
             alert("Lỗi: " + e.message);
         } finally {
             setIsExportingExcel(false);
+            fetchGalleryFolders(); // cập nhật dấu "đã có Excel" trong danh sách album
         }
     };
 
@@ -820,6 +948,20 @@ Rules:
         }).catch(() => { });
     }, []);
 
+    // Đồng bộ lại trạng thái Bridge định kỳ — không chỉ dựa vào event bridge_status,
+    // để UI không kẹt "Extension kết nối" khi event bị lỡ (vd: Chrome đóng)
+    useEffect(() => {
+        if (!bridgeRunning) return;
+        const timer = setInterval(() => {
+            GetBridgeStatus().then(status => {
+                if (!status) return;
+                setBridgeRunning(status.running);
+                setExtensionConnected(status.connected);
+            }).catch(() => { });
+        }, 3000);
+        return () => clearInterval(timer);
+    }, [bridgeRunning]);
+
     useEffect(() => {
         checkSessionStatus();
 
@@ -868,9 +1010,7 @@ Rules:
                 if (savedConfig) currentConfig = JSON.parse(savedConfig);
             } catch (e) { }
 
-            const currentSupabase = currentConfig.supabaseUrl && currentConfig.supabaseKey
-                ? createClient(currentConfig.supabaseUrl, currentConfig.supabaseKey)
-                : null;
+            const currentSupabase = createSupabaseClient(currentConfig);
 
             if (albumID && albumID !== "Success" && currentSupabase) {
                 try {
@@ -1140,8 +1280,10 @@ Rules:
                 if (result && result.startsWith('Error')) {
                     addLog('Lỗi khi mở Bridge: ' + result, 'error');
                 } else {
-                    setGoogleFlowChromeStatus('waiting');
-                    addLog('✅ Bridge đã chạy! Đang chờ Chrome Extension kết nối...', 'info');
+                    // Lấy trạng thái thật từ backend (extension có thể đã kết nối ngay lập tức)
+                    const st = await GetGoogleFlowChromeStatus().catch(() => 'waiting');
+                    setGoogleFlowChromeStatus(st === 'stopped' ? 'waiting' : st);
+                    addLog(st === 'running' ? '✅ Extension đã kết nối!' : '✅ Bridge đã chạy! Đang chờ Chrome Extension kết nối...', 'info');
                     addLog('📋 Hướng dẫn: 1) Cài extension từ thư mục chrome-extension/ 2) Mở labs.google trong Chrome 3) Extension sẽ tự kết nối', 'info');
                 }
             }
@@ -1432,10 +1574,12 @@ ${bannedWords.map(w => `- "${w.banned}" → thay bằng "${w.replacement || '(b�
                 addLog(`Đang gửi yêu cầu tạo prompt tới Chrome Extension [ID: ${requestId}]...`, 'info');
 
                 resultText = await new Promise((resolve, reject) => {
-                    const timeoutId = setTimeout(() => {
+                    const timeoutId = setTimeout(async () => {
                         delete bridgePendingRef.current[requestId];
-                        reject(new Error("Quá thời gian chờ phản hồi từ ChatGPT (2 phút). Kiểm tra ChatGPT đang mở và Extension đang kết nối."));
-                    }, 120000);
+                        // Gửi cancel để reset content.js — nếu không, prompt sau sẽ bị BUSY
+                        try { await CancelBridgePrompt(); } catch (_) {}
+                        reject(new Error("Quá thời gian chờ phản hồi từ ChatGPT (6 phút). Kiểm tra ChatGPT đang mở và Extension đang kết nối."));
+                    }, BRIDGE_TIMEOUT_MS);
 
                     // Đăng ký callback vào global pending map (không dùng EventsOn để tránh ghi đè)
                     bridgePendingRef.current[requestId] = {
@@ -1539,20 +1683,15 @@ ${bannedWords.map(w => `- "${w.banned}" → thay bằng "${w.replacement || '(b�
                             resultText = targetEl.textContent || targetEl.innerText || "";
                         } else {
                             // No code/pre tags - preserve newlines from block-level elements
-                            tempDiv.querySelectorAll("br").forEach(br => {
-                                const newline = document.createTextNode("\n");
-                                if (br.parentNode) br.parentNode.replaceChild(newline, br);
+                            tempDiv.querySelectorAll("br").forEach(br => br.replaceWith("\n"));
+                            const blockTags = tempDiv.querySelectorAll("p, div, li, tr, h1, h2, h3, h4, h5, h6, hr, blockquote");
+                            blockTags.forEach(el => {
+                                el.before("\n");
+                                el.after("\n");
                             });
-                            const blockTags = ["p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "pre"];
-                            blockTags.forEach(tag => {
-                                tempDiv.querySelectorAll(tag).forEach(el => {
-                                    const val = el.textContent || el.innerText || "";
-                                    if (val && !val.endsWith("\n")) {
-                                        el.appendChild(document.createTextNode("\n"));
-                                    }
-                                });
-                            });
-                            resultText = tempDiv.textContent || tempDiv.innerText || "";
+                            resultText = (tempDiv.textContent || tempDiv.innerText || "")
+                                .replace(/\r\n/g, "\n")
+                                .replace(/\n{3,}/g, "\n\n");
                         }
                     }
                 } catch (e) {
@@ -1620,19 +1759,43 @@ ${bannedWords.map(w => `- "${w.banned}" → thay bằng "${w.replacement || '(b�
                 }));
                 setGeneratedPrompts(parsedIdeas);
             } else {
-                // Advanced regex parsing to find all NAME/PROMPT pairs
-                const regex = /NAME:\s*(.*?)\s*\n\s*PROMPT:\s*([\s\S]*?)(?=\n\s*NAME:|\n\s*---|$)/g;
+                // Strip markdown bold markers (** **) that may remain from ChatGPT HTML-to-text conversion
+                // e.g. "**NAME:** Title" → "NAME: Title", "**PROMPT:** Content" → "PROMPT: Content"
+                const cleanResult = resultText.replace(/\*\*/g, '');
+                
+                // Flexible Regex matching NAME: ... PROMPT: ...
+                const namePromptRegex = /(?:(?:\d+[\.\)]\s*)?NAME:\s*([^\n\r]+)[\s\S]*?PROMPT:\s*([\s\S]*?)(?=(?:(?:\d+[\.\)]\s*)?NAME:|\n\s*---|$$)))/gi;
                 let match;
                 const parsedPrompts = [];
-                while ((match = regex.exec(resultText)) !== null) {
-                    parsedPrompts.push({
-                        name: match[1].trim(),
-                        content: match[2].trim()
-                    });
+                while ((match = namePromptRegex.exec(cleanResult)) !== null) {
+                    const name = match[1].trim();
+                    const content = match[2].trim();
+                    if (name || content) {
+                        parsedPrompts.push({
+                            name: name || "Prompt " + (parsedPrompts.length + 1),
+                            content: content
+                        });
+                    }
+                }
+
+                // Fallback strategy B: Split by NAME: keyword if primary regex matched nothing
+                if (parsedPrompts.length === 0) {
+                    const nameBlocks = cleanResult.split(/(?=(?:\d+[\.\)]\s*)?NAME:)/i).filter(b => /NAME:/i.test(b));
+                    if (nameBlocks.length > 0) {
+                        nameBlocks.forEach((block, idx) => {
+                            const nameMatch = block.match(/NAME:\s*([^\n\r]+)/i);
+                            const promptMatch = block.match(/PROMPT:\s*([\s\S]*?)(?:---|$$)/i);
+                            const name = nameMatch ? nameMatch[1].trim() : `Prompt ${idx + 1}`;
+                            const content = promptMatch ? promptMatch[1].trim() : block.replace(/.*NAME:[^\n\r]*/i, '').replace(/.*PROMPT:/i, '').trim();
+                            if (content) {
+                                parsedPrompts.push({ name, content });
+                            }
+                        });
+                    }
                 }
 
                 if (parsedPrompts.length === 0) {
-                    const fallback = resultText.split('\n')
+                    const fallback = cleanResult.split('\n')
                         .map(l => l.trim())
                         .filter(l => /^\d+[\.\)]\s+/.test(l) || /^[-*]\s+/.test(l))
                         .map(l => l.replace(/^\d+[\.\)]\s+/, '').replace(/^[-*]\s+/, ''));
@@ -1997,7 +2160,27 @@ ${bannedWords.map(w => `- "${w.banned}" → thay bằng "${w.replacement || '(b�
                                                     <button onClick={handleBulkCategorize} disabled={selectedIdeaIds.length === 0 || !selectedCategoryId} className="secondary-btn py-1.5 px-3 text-[11px] h-9 gap-1"><FolderPlus size={14} /> Phân loại</button>
                                                 </div>
                                             ) : (
-                                                <button onClick={handleBulkSavePrompts} disabled={selectedIdeaIds.length === 0} className="secondary-btn py-1.5 px-4 text-[11px] h-9 gap-1"><FolderPlus size={14} /> Thêm vào ý tưởng</button>
+                                                <div className="flex items-center gap-2">
+                                                    <button
+                                                        onClick={() => {
+                                                            const selectedPrompts = generatedPrompts.filter((_, idx) => selectedIdeaIds.includes(idx));
+                                                            if (selectedPrompts.length === 0) return;
+                                                            const promptsStr = selectedPrompts.map(p => p.content).join('\n');
+                                                            setPromptText(prev => {
+                                                                const newVal = prev ? prev + '\n' + promptsStr : promptsStr;
+                                                                localStorage.setItem('bulkai_prompts', newVal);
+                                                                return newVal;
+                                                            });
+                                                            setActiveTab('generator');
+                                                            addLog(`Đã thêm ${selectedPrompts.length} prompt vào App`, 'success');
+                                                        }}
+                                                        disabled={selectedIdeaIds.length === 0}
+                                                        className="secondary-btn py-1.5 px-4 text-[11px] h-9 gap-1 bg-accentEnd/10 text-accentEnd hover:bg-accentEnd hover:text-white border-accentEnd/20"
+                                                    >
+                                                        <ImageIcon size={14} /> Thêm vào App ({selectedIdeaIds.length})
+                                                    </button>
+                                                    <button onClick={handleBulkSavePrompts} disabled={selectedIdeaIds.length === 0} className="secondary-btn py-1.5 px-4 text-[11px] h-9 gap-1"><FolderPlus size={14} /> Lưu vào ý tưởng</button>
+                                                </div>
                                             )}
                                             <button onClick={handleBulkDelete} disabled={selectedIdeaIds.length === 0} className="tertiary-btn py-1.5 px-3 text-[11px] h-9 gap-1 text-red-400 border-red-500/10"><Trash2 size={14} /> Xóa</button>
                                         </div>
@@ -2177,6 +2360,11 @@ ${bannedWords.map(w => `- "${w.banned}" → thay bằng "${w.replacement || '(b�
                                                                 setSelectedIdeaForModal(idea);
                                                                 fetchIdeaPrompts(idea.id);
                                                                 setPromptSortStatus('default');
+                                                                setModalPromptFilter('all');
+                                                                setModalPromptLimit(25);
+                                                                setModalPromptPage(1);
+                                                                setModalPromptSearch('');
+                                                                setSelectedModalPromptIds([]);
                                                                 setShowPromptsModal(true);
                                                             }}
                                                             className="border-b border-white/5 hover:bg-white/5 group transition-colors cursor-pointer"
@@ -2681,14 +2869,77 @@ ${bannedWords.map(w => `- "${w.banned}" → thay bằng "${w.replacement || '(b�
                                         </div>
                                         <div className="space-y-2">
                                             <label className="text-sm font-medium text-textSoft flex items-center gap-2">
-                                                API Key (anon / public)
+                                                Publishable key
                                             </label>
                                             <input
                                                 type="password"
-                                                placeholder="eyJhbG..."
+                                                placeholder="sb_publishable_..."
                                                 className="input-style font-mono text-sm"
                                                 value={config.supabaseKey || ''}
                                                 onChange={e => setConfig({ ...config, supabaseKey: e.target.value })}
+                                            />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-sm font-medium text-textSoft flex items-center gap-2">
+                                                Secret key <span className="text-xs text-textSoft/60">(tuỳ chọn)</span>
+                                            </label>
+                                            <input
+                                                type="password"
+                                                placeholder="sb_secret_..."
+                                                className="input-style font-mono text-sm"
+                                                value={config.supabaseSecretKey || ''}
+                                                onChange={e => setConfig({ ...config, supabaseSecretKey: e.target.value })}
+                                            />
+                                            <p className="text-xs text-textSoft/60">
+                                                Nếu nhập, app dùng Secret key (bỏ qua RLS) thay cho Publishable key. Không chia sẻ key này cho người khác.
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-4 pb-6 border-b border-white/5">
+                                    <h3 className="text-xl font-bold">Supabase 2 (backup)</h3>
+                                    <p className="text-sm text-textSoft mt-1 mb-4">
+                                        Tuỳ chọn. Mọi thao tác thêm / sửa / xoá trên Supabase chính sẽ được ghi song song sang đây.
+                                        Dữ liệu vẫn đọc từ Supabase chính. DB backup cần có cùng các bảng và cột (ideas, prompts, categories).
+                                        Lỗi khi ghi backup chỉ hiện trong log, không làm dừng công việc.
+                                    </p>
+
+                                    <div className="grid grid-cols-1 gap-6">
+                                        <div className="space-y-2">
+                                            <label className="text-sm font-medium text-textSoft flex items-center gap-2">
+                                                Project URL
+                                            </label>
+                                            <input
+                                                type="text"
+                                                placeholder="https://yyyyyy.supabase.co"
+                                                className="input-style font-mono text-sm"
+                                                value={config.supabaseBackupUrl || ''}
+                                                onChange={e => setConfig({ ...config, supabaseBackupUrl: e.target.value })}
+                                            />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-sm font-medium text-textSoft flex items-center gap-2">
+                                                Publishable key
+                                            </label>
+                                            <input
+                                                type="password"
+                                                placeholder="sb_publishable_..."
+                                                className="input-style font-mono text-sm"
+                                                value={config.supabaseBackupKey || ''}
+                                                onChange={e => setConfig({ ...config, supabaseBackupKey: e.target.value })}
+                                            />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-sm font-medium text-textSoft flex items-center gap-2">
+                                                Secret key <span className="text-xs text-textSoft/60">(tuỳ chọn)</span>
+                                            </label>
+                                            <input
+                                                type="password"
+                                                placeholder="sb_secret_..."
+                                                className="input-style font-mono text-sm"
+                                                value={config.supabaseBackupSecretKey || ''}
+                                                onChange={e => setConfig({ ...config, supabaseBackupSecretKey: e.target.value })}
                                             />
                                         </div>
                                     </div>
@@ -2939,7 +3190,12 @@ ${bannedWords.map(w => `- "${w.banned}" → thay bằng "${w.replacement || '(b�
                                                         }`}
                                                 >
                                                     <FolderPlus size={16} />
-                                                    <span className="font-mono text-sm truncate">{folder.name}</span>
+                                                    <span className="font-mono text-sm truncate flex-1">{folder.name}</span>
+                                                    {folder.hasExcel ? (
+                                                        <span className="shrink-0" title="Đã có file Excel"><FileSpreadsheet size={14} className="text-emerald-400" /></span>
+                                                    ) : (
+                                                        <span className="shrink-0 text-[10px] text-textSoft/50" title="Chưa có file Excel">no xlsx</span>
+                                                    )}
                                                 </button>
                                             ))}
                                         </div>
@@ -3391,263 +3647,510 @@ ${bannedWords.map(w => `- "${w.banned}" → thay bằng "${w.replacement || '(b�
             </div>
             {/* Modal hiển thị danh sách Prompt của ý tưởng */}
             {
-                showPromptsModal && (
-                    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
-                        <div className="neumorphic-panel w-full max-w-6xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl border border-white/10">
-                            {/* Header của Modal */}
-                            <div className="p-6 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
-                                <div className="flex items-center gap-6">
-                                    <div>
-                                        <h3 className="text-xl font-bold text-white flex items-center gap-3">
-                                            <div className="w-2 h-8 bg-accentEnd rounded-full" />
-                                            Bảng Quản lý Prompt Chi tiết
-                                        </h3>
-                                        <p className="text-sm text-textSoft mt-1">Concept: <span className="text-accentEnd italic">{selectedIdeaForModal?.title}</span></p>
+                showPromptsModal && (() => {
+                    // 1. Lọc theo trạng thái và tìm kiếm
+                    const filteredModalPrompts = modalPrompts.filter(p => {
+                        if (modalPromptFilter === 'not_run' && p.is_used) return false;
+                        if (modalPromptFilter === 'run' && !p.is_used) return false;
+                        if (modalPromptSearch.trim()) {
+                            const query = modalPromptSearch.toLowerCase();
+                            const titleMatch = (p.title || "").toLowerCase().includes(query);
+                            const contentMatch = (p.content || "").toLowerCase().includes(query);
+                            if (!titleMatch && !contentMatch) return false;
+                        }
+                        return true;
+                    });
+
+                    // 2. Sắp xếp
+                    const sortedModalPrompts = [...filteredModalPrompts].sort((a, b) => {
+                        if (promptSortStatus === 'unused_first') return (a.is_used === b.is_used) ? 0 : a.is_used ? 1 : -1;
+                        if (promptSortStatus === 'used_first') return (a.is_used === b.is_used) ? 0 : a.is_used ? -1 : 1;
+                        return 0;
+                    });
+
+                    // 3. Phân trang
+                    const totalModalPromptPages = Math.max(1, Math.ceil(sortedModalPrompts.length / modalPromptLimit));
+                    const safeModalPromptPage = Math.min(Math.max(1, modalPromptPage), totalModalPromptPages);
+                    const modalStartIndex = (safeModalPromptPage - 1) * modalPromptLimit;
+                    const modalEndIndex = modalStartIndex + modalPromptLimit;
+                    const paginatedModalPrompts = sortedModalPrompts.slice(modalStartIndex, modalEndIndex);
+
+                    const notRunCount = modalPrompts.filter(p => !p.is_used).length;
+                    const runCount = modalPrompts.filter(p => p.is_used).length;
+
+                    const currentPageIds = paginatedModalPrompts.map(p => p.id);
+                    const isAllCurrentSelected = currentPageIds.length > 0 && currentPageIds.every(id => selectedModalPromptIds.includes(id));
+
+                    return (
+                        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+                            <div className="neumorphic-panel w-full max-w-6xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl border border-white/10">
+                                {/* Header của Modal */}
+                                <div className="p-6 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
+                                    <div className="flex items-center gap-6">
+                                        <div>
+                                            <h3 className="text-xl font-bold text-white flex items-center gap-3">
+                                                <div className="w-2 h-8 bg-accentEnd rounded-full" />
+                                                Bảng Quản lý Prompt Chi tiết
+                                            </h3>
+                                            <p className="text-sm text-textSoft mt-1">Concept: <span className="text-accentEnd italic">{selectedIdeaForModal?.title}</span></p>
+                                        </div>
+
+                                        {selectedModalPromptIds.length > 0 && (
+                                            <div className="flex items-center gap-3 animate-in fade-in slide-in-from-left-4 flex-wrap">
+                                                <span className="text-xs text-textSoft/70 px-3 py-1 bg-white/5 rounded-full border border-white/10">
+                                                    Đã chọn <span className="text-white font-bold">{selectedModalPromptIds.length}</span>
+                                                </span>
+                                                {selectedModalPromptIds.length < sortedModalPrompts.length && (
+                                                    <button
+                                                        onClick={() => setSelectedModalPromptIds(sortedModalPrompts.map(p => p.id))}
+                                                        className="text-[11px] text-accentEnd hover:underline font-semibold"
+                                                    >
+                                                        Chọn tất cả {sortedModalPrompts.length} prompt
+                                                    </button>
+                                                )}
+                                                <button
+                                                    onClick={() => setSelectedModalPromptIds([])}
+                                                    className="text-[11px] text-textSoft hover:text-white underline"
+                                                >
+                                                    Bỏ chọn
+                                                </button>
+                                                <button
+                                                    onClick={async () => {
+                                                        if (confirm(`Bạn có chắc muốn xóa ${selectedModalPromptIds.length} prompt đã chọn?`)) {
+                                                            // 1. Xóa khỏi bảng prompts
+                                                            const { error } = await supabase.from('prompts').delete().in('id', selectedModalPromptIds);
+                                                            if (!error) {
+                                                                // 2. Cập nhật mảng trong bảng ideas để đồng bộ hóa
+                                                                const { data: ideaData } = await supabase.from('ideas').select('midjourney_prompt').eq('id', selectedIdeaForModal.id).single();
+                                                                if (ideaData) {
+                                                                    const filteredArray = (ideaData.midjourney_prompt || []).filter(id => !selectedModalPromptIds.includes(id));
+                                                                    await supabase.from('ideas').update({ midjourney_prompt: filteredArray }).eq('id', selectedIdeaForModal.id);
+                                                                }
+
+                                                                setModalPrompts(prev => prev.filter(p => !selectedModalPromptIds.includes(p.id)));
+                                                                setSelectedModalPromptIds([]);
+                                                                fetchIdeas();
+                                                                addLog(`Đã xóa ${selectedModalPromptIds.length} prompt`, 'success');
+                                                            }
+                                                        }
+                                                    }}
+                                                    className="secondary-btn h-9 px-4 text-xs bg-red-500/10 text-red-400 hover:bg-red-500 hover:text-white border-red-500/20"
+                                                >
+                                                    <Trash2 size={14} />
+                                                    Xóa hàng loạt
+                                                </button>
+                                                <button
+                                                    onClick={() => {
+                                                        const selectedPromptsStr = modalPrompts
+                                                            .filter(p => selectedModalPromptIds.includes(p.id))
+                                                            .map(p => p.content)
+                                                            .join('\n');
+                                                        if (selectedPromptsStr) {
+                                                            setPromptText(prev => {
+                                                                const newVal = prev ? prev + '\n' + selectedPromptsStr : selectedPromptsStr;
+                                                                localStorage.setItem('bulkai_prompts', newVal);
+                                                                return newVal;
+                                                            });
+                                                            setShowPromptsModal(false);
+                                                            setSelectedModalPromptIds([]);
+                                                            setActiveTab('generator');
+                                                            addLog(`Đã chuyển ${selectedModalPromptIds.length} prompt sang form tạo ảnh`, 'success');
+                                                        }
+                                                    }}
+                                                    className="secondary-btn h-9 px-4 text-xs bg-accentEnd/10 text-accentEnd hover:bg-accentEnd hover:text-white border-accentEnd/20 transition-all font-bold"
+                                                >
+                                                    <ImageIcon size={14} />
+                                                    Gửi sang Form tạo ảnh
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <button
+                                        onClick={() => {
+                                            setShowPromptsModal(false);
+                                            setSelectedModalPromptIds([]);
+                                            setModalPromptSearch('');
+                                        }}
+                                        className="p-2 rounded-full hover:bg-white/10 text-textSoft hover:text-white transition-all"
+                                    >
+                                        <X size={24} />
+                                    </button>
+                                </div>
+
+                                {/* Thanh công cụ: Bộ lọc trạng thái & Phân trang limit */}
+                                <div className="px-6 py-3 border-b border-white/5 bg-white/[0.015] flex flex-wrap items-center justify-between gap-4 shrink-0">
+                                    <div className="flex flex-wrap items-center gap-3">
+                                        {/* Bộ lọc trạng thái */}
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-xs text-textSoft flex items-center gap-1.5 font-medium">
+                                                <Filter size={13} className="text-accentEnd" />
+                                                Lọc:
+                                            </span>
+                                            <div className="flex items-center bg-white/[0.04] p-1 rounded-xl border border-white/10 gap-1">
+                                                <button
+                                                    onClick={() => { setModalPromptFilter('all'); setModalPromptPage(1); }}
+                                                    className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
+                                                        modalPromptFilter === 'all'
+                                                            ? 'bg-accentEnd text-white shadow-glow-sm'
+                                                            : 'text-textSoft hover:text-white hover:bg-white/5'
+                                                    }`}
+                                                >
+                                                    Tất cả
+                                                    <span className={`ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+                                                        modalPromptFilter === 'all' ? 'bg-white/20 text-white' : 'bg-white/10 text-textSoft'
+                                                    }`}>
+                                                        {modalPrompts.length}
+                                                    </span>
+                                                </button>
+
+                                                <button
+                                                    onClick={() => { setModalPromptFilter('not_run'); setModalPromptPage(1); }}
+                                                    className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                                                        modalPromptFilter === 'not_run'
+                                                            ? 'bg-amber-500/25 text-amber-300 border border-amber-500/40 shadow-glow-sm'
+                                                            : 'text-textSoft hover:text-white hover:bg-white/5'
+                                                    }`}
+                                                >
+                                                    <span className={`w-1.5 h-1.5 rounded-full ${modalPromptFilter === 'not_run' ? 'bg-amber-300 animate-pulse' : 'bg-amber-400/60'}`} />
+                                                    Chưa chạy (Chưa run)
+                                                    <span className={`ml-1 text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+                                                        modalPromptFilter === 'not_run' ? 'bg-amber-400/30 text-amber-200' : 'bg-white/10 text-textSoft'
+                                                    }`}>
+                                                        {notRunCount}
+                                                    </span>
+                                                </button>
+
+                                                <button
+                                                    onClick={() => { setModalPromptFilter('run'); setModalPromptPage(1); }}
+                                                    className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                                                        modalPromptFilter === 'run'
+                                                            ? 'bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 shadow-glow-sm'
+                                                            : 'text-textSoft hover:text-white hover:bg-white/5'
+                                                    }`}
+                                                >
+                                                    <span className={`w-1.5 h-1.5 rounded-full ${modalPromptFilter === 'run' ? 'bg-emerald-300' : 'bg-emerald-400/60'}`} />
+                                                    Đã chạy (Đã run)
+                                                    <span className={`ml-1 text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+                                                        modalPromptFilter === 'run' ? 'bg-emerald-400/30 text-emerald-200' : 'bg-white/10 text-textSoft'
+                                                    }`}>
+                                                        {runCount}
+                                                    </span>
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {/* Tìm kiếm nhanh */}
+                                        <div className="relative">
+                                            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-textSoft/50" />
+                                            <input
+                                                type="text"
+                                                placeholder="Tìm prompt..."
+                                                value={modalPromptSearch}
+                                                onChange={(e) => {
+                                                    setModalPromptSearch(e.target.value);
+                                                    setModalPromptPage(1);
+                                                }}
+                                                className="bg-white/[0.04] border border-white/10 rounded-xl pl-8 pr-7 py-1 text-xs text-white placeholder:text-textSoft/40 outline-none focus:border-accentEnd/50 w-44 focus:w-60 transition-all"
+                                            />
+                                            {modalPromptSearch && (
+                                                <button
+                                                    onClick={() => { setModalPromptSearch(''); setModalPromptPage(1); }}
+                                                    className="absolute right-2 top-1/2 -translate-y-1/2 text-textSoft hover:text-white p-0.5"
+                                                    title="Xóa tìm kiếm"
+                                                >
+                                                    <X size={12} />
+                                                </button>
+                                            )}
+                                        </div>
                                     </div>
 
-                                    {selectedModalPromptIds.length > 0 && (
-                                        <div className="flex items-center gap-3 animate-in fade-in slide-in-from-left-4">
-                                            <span className="text-xs text-textSoft/50 px-3 py-1 bg-white/5 rounded-full border border-white/10">
-                                                Đã chọn <span className="text-white font-bold">{selectedModalPromptIds.length}</span>
-                                            </span>
-                                            <button
-                                                onClick={async () => {
-                                                    if (confirm(`Bạn có chắc muốn xóa ${selectedModalPromptIds.length} prompt đã chọn?`)) {
-                                                        // 1. Xóa khỏi bảng prompts
-                                                        const { error } = await supabase.from('prompts').delete().in('id', selectedModalPromptIds);
-                                                        if (!error) {
-                                                            // 2. Cập nhật mảng trong bảng ideas để đồng bộ hóa
-                                                            const { data: ideaData } = await supabase.from('ideas').select('midjourney_prompt').eq('id', selectedIdeaForModal.id).single();
-                                                            if (ideaData) {
-                                                                const filteredArray = (ideaData.midjourney_prompt || []).filter(id => !selectedModalPromptIds.includes(id));
-                                                                await supabase.from('ideas').update({ midjourney_prompt: filteredArray }).eq('id', selectedIdeaForModal.id);
-                                                            }
+                                    {/* Chọn limit: 25, 50, 75, 100 */}
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs text-textSoft font-medium">Hiển thị:</span>
+                                        <div className="flex items-center bg-white/[0.04] p-1 rounded-xl border border-white/10 gap-1">
+                                            {[25, 50, 75, 100].map(limit => (
+                                                <button
+                                                    key={limit}
+                                                    onClick={() => {
+                                                        setModalPromptLimit(limit);
+                                                        setModalPromptPage(1);
+                                                    }}
+                                                    className={`min-w-[32px] h-7 px-2.5 rounded-lg text-xs font-bold transition-all ${
+                                                        modalPromptLimit === limit
+                                                            ? 'bg-accentEnd text-white shadow-glow-sm'
+                                                            : 'text-textSoft hover:text-white hover:bg-white/5'
+                                                    }`}
+                                                >
+                                                    {limit}
+                                                </button>
+                                            ))}
+                                        </div>
+                                        <span className="text-xs text-textSoft/60">/ trang</span>
+                                    </div>
+                                </div>
 
-                                                            setModalPrompts(prev => prev.filter(p => !selectedModalPromptIds.includes(p.id)));
-                                                            setSelectedModalPromptIds([]);
-                                                            fetchIdeas();
-                                                            addLog(`Đã xóa ${selectedModalPromptIds.length} prompt`, 'success');
-                                                        }
-                                                    }
-                                                }}
-                                                className="secondary-btn h-9 px-4 text-xs bg-red-500/10 text-red-400 hover:bg-red-500 hover:text-white border-red-500/20"
-                                            >
-                                                <Trash2 size={14} />
-                                                Xóa hàng loạt
-                                            </button>
+                                {/* Nội dung Modal */}
+                                <div className="p-6 flex-1 overflow-y-auto scrollbar bg-[#0f111a]">
+                                    {isLoadingModalPrompts ? (
+                                        <div className="flex flex-col items-center justify-center py-20 gap-4 text-textSoft">
+                                            <Zap size={40} className="animate-spin text-accentEnd" />
+                                            <p className="animate-pulse">Đang nạp dữ liệu prompt...</p>
+                                        </div>
+                                    ) : modalPrompts.length === 0 ? (
+                                        <div className="text-center py-20 bg-white/[0.02] rounded-2xl border border-dashed border-white/10">
+                                            <p className="text-textSoft italic">Ý tưởng này chưa có prompt nào được lưu.</p>
                                             <button
                                                 onClick={() => {
-                                                    const selectedPromptsStr = modalPrompts
-                                                        .filter(p => selectedModalPromptIds.includes(p.id))
-                                                        .map(p => p.content)
-                                                        .join('\n');
-                                                    if (selectedPromptsStr) {
-                                                        setPromptText(prev => {
-                                                            const newVal = prev ? prev + '\n' + selectedPromptsStr : selectedPromptsStr;
-                                                            localStorage.setItem('bulkai_prompts', newVal);
-                                                            return newVal;
-                                                        });
-                                                        setShowPromptsModal(false);
-                                                        setSelectedModalPromptIds([]);
-                                                        setActiveTab('generator');
-                                                        addLog(`Đã chuyển ${selectedModalPromptIds.length} prompt sang form tạo ảnh`, 'success');
-                                                    }
+                                                    setShowPromptsModal(false);
+                                                    const formattedIdea = `Tên concept: ${selectedIdeaForModal.title}, mục tiêu thương mại: ${selectedIdeaForModal.commercial_goal}, cảm xúc: ${selectedIdeaForModal.vibe}, style cues: ${selectedIdeaForModal.style_cues}`;
+                                                    setPromptIdea(formattedIdea);
+                                                    setActiveIdeaId(selectedIdeaForModal.id);
+                                                    setPromptMode('prompt');
+                                                    setActiveTab('prompt');
                                                 }}
-                                                className="secondary-btn h-9 px-4 text-xs bg-accentEnd/10 text-accentEnd hover:bg-accentEnd hover:text-white border-accentEnd/20 transition-all font-bold"
+                                                className="mt-4 text-accentEnd text-sm hover:underline"
                                             >
-                                                <ImageIcon size={14} />
-                                                Gửi sang Form tạo ảnh
+                                                Tạo prompt ngay →
                                             </button>
                                         </div>
-                                    )}
-                                </div>
-                                <button
-                                    onClick={() => {
-                                        setShowPromptsModal(false);
-                                        setSelectedModalPromptIds([]);
-                                    }}
-                                    className="p-2 rounded-full hover:bg-white/10 text-textSoft hover:text-white transition-all"
-                                >
-                                    <X size={24} />
-                                </button>
-                            </div>
-
-                            {/* Nội dung Modal */}
-                            <div className="p-6 flex-1 overflow-y-auto scrollbar bg-[#0f111a]">
-                                {isLoadingModalPrompts ? (
-                                    <div className="flex flex-col items-center justify-center py-20 gap-4 text-textSoft">
-                                        <Zap size={40} className="animate-spin text-accentEnd" />
-                                        <p className="animate-pulse">Đang nạp dữ liệu prompt...</p>
-                                    </div>
-                                ) : modalPrompts.length === 0 ? (
-                                    <div className="text-center py-20 bg-white/[0.02] rounded-2xl border border-dashed border-white/10">
-                                        <p className="text-textSoft italic">Ý tưởng này chưa có prompt nào được lưu.</p>
-                                        <button
-                                            onClick={() => {
-                                                setShowPromptsModal(false);
-                                                const formattedIdea = `Tên concept: ${selectedIdeaForModal.title}, mục tiêu thương mại: ${selectedIdeaForModal.commercial_goal}, cảm xúc: ${selectedIdeaForModal.vibe}, style cues: ${selectedIdeaForModal.style_cues}`;
-                                                setPromptIdea(formattedIdea);
-                                                setActiveIdeaId(selectedIdeaForModal.id);
-                                                setPromptMode('prompt');
-                                                setActiveTab('prompt');
-                                            }}
-                                            className="mt-4 text-accentEnd text-sm hover:underline"
-                                        >
-                                            Tạo prompt ngay →
-                                        </button>
-                                    </div>
-                                ) : (
-                                    <div className="rounded-xl border border-white/5 overflow-hidden shadow-glow-sm">
-                                        <table className="w-full text-left font-mono text-xs">
-                                            <thead>
-                                                <tr className="bg-white/[0.03] text-textSoft/50 uppercase tracking-widest border-b border-white/5">
-                                                    <th className="py-4 px-4 w-12 text-center">
-                                                        <button
-                                                            onClick={() => {
-                                                                if (selectedModalPromptIds.length === modalPrompts.length) {
-                                                                    setSelectedModalPromptIds([]);
-                                                                } else {
-                                                                    setSelectedModalPromptIds(modalPrompts.map(p => p.id));
-                                                                }
-                                                            }}
-                                                            className="p-1 hover:text-white transition-colors"
-                                                        >
-                                                            {selectedModalPromptIds.length > 0 && selectedModalPromptIds.length === modalPrompts.length ? <CheckSquare size={16} className="text-accentEnd" /> : <Square size={16} />}
-                                                        </button>
-                                                    </th>
-                                                    <th className="py-4 px-4 w-12 text-center">STT</th>
-                                                    <th className="py-4 px-4 w-40">Tên Prompt</th>
-                                                    <th className="py-4 px-4">Nội dung Prompt</th>
-                                                    <th className="py-4 px-4 w-32 text-center">
-                                                        <button
-                                                            onClick={() => {
-                                                                setPromptSortStatus(prev => {
-                                                                    if (prev === 'default') return 'unused_first';
-                                                                    if (prev === 'unused_first') return 'used_first';
-                                                                    return 'default';
-                                                                });
-                                                            }}
-                                                            className="flex items-center gap-1 mx-auto hover:text-accentEnd transition-colors group"
-                                                            title="Nhấn để sắp xếp theo trạng thái"
-                                                        >
-                                                            Trạng thái
-                                                            <span className={`text-[8px] transition-colors ${promptSortStatus !== 'default' ? 'text-accentEnd' : 'text-textSoft/30 group-hover:text-textSoft/60'}`}>
-                                                                {promptSortStatus === 'unused_first' ? '▲' : promptSortStatus === 'used_first' ? '▼' : '◆'}
-                                                            </span>
-                                                        </button>
-                                                    </th>
-                                                    <th className="py-4 px-4 w-32 text-center">Ngày tạo</th>
-                                                    <th className="py-4 px-4 w-28 text-center">Hành động</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                {[...modalPrompts].sort((a, b) => {
-                                                    if (promptSortStatus === 'unused_first') return (a.is_used === b.is_used) ? 0 : a.is_used ? 1 : -1;
-                                                    if (promptSortStatus === 'used_first') return (a.is_used === b.is_used) ? 0 : a.is_used ? -1 : 1;
-                                                    return 0;
-                                                }).map((p, pIdx) => (
-                                                    <tr key={p.id} className="border-b border-white/5 hover:bg-white/[0.02] transition-colors group">
-                                                        <td className="py-4 px-4 text-center">
+                                    ) : sortedModalPrompts.length === 0 ? (
+                                        <div className="text-center py-16 bg-white/[0.02] rounded-2xl border border-dashed border-white/10">
+                                            <p className="text-textSoft italic">Không tìm thấy prompt nào phù hợp với bộ lọc hiện tại.</p>
+                                            <button
+                                                onClick={() => {
+                                                    setModalPromptFilter('all');
+                                                    setModalPromptSearch('');
+                                                    setModalPromptPage(1);
+                                                }}
+                                                className="mt-3 text-xs text-accentEnd hover:underline"
+                                            >
+                                                Đặt lại bộ lọc (Hiển thị tất cả {modalPrompts.length} prompt)
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <div className="rounded-xl border border-white/5 overflow-hidden shadow-glow-sm">
+                                            <table className="w-full text-left font-mono text-xs">
+                                                <thead>
+                                                    <tr className="bg-white/[0.03] text-textSoft/50 uppercase tracking-widest border-b border-white/5">
+                                                        <th className="py-4 px-4 w-12 text-center">
                                                             <button
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    if (selectedModalPromptIds.includes(p.id)) {
-                                                                        setSelectedModalPromptIds(prev => prev.filter(uid => uid !== p.id));
+                                                                onClick={() => {
+                                                                    if (isAllCurrentSelected) {
+                                                                        setSelectedModalPromptIds(prev => prev.filter(id => !currentPageIds.includes(id)));
                                                                     } else {
-                                                                        setSelectedModalPromptIds(prev => [...prev, p.id]);
+                                                                        setSelectedModalPromptIds(prev => Array.from(new Set([...prev, ...currentPageIds])));
                                                                     }
                                                                 }}
                                                                 className="p-1 hover:text-white transition-colors"
+                                                                title={isAllCurrentSelected ? "Bỏ chọn trang này" : "Chọn tất cả trang này"}
                                                             >
-                                                                {selectedModalPromptIds.includes(p.id) ? <CheckSquare size={16} className="text-accentEnd" /> : <Square size={16} className="text-white/20" />}
+                                                                {isAllCurrentSelected ? <CheckSquare size={16} className="text-accentEnd" /> : <Square size={16} className="text-white/30" />}
                                                             </button>
-                                                        </td>
-                                                        <td className="py-4 px-4 text-center text-textSoft/60">{modalPrompts.length - pIdx}</td>
-                                                        <td className="py-4 px-4 text-white font-bold text-xs">{p.title || "---"}</td>
-                                                        <td className="py-4 px-4">
-                                                            <div className="text-white/80 line-clamp-2 leading-relaxed" title={p.content}>
-                                                                {p.content}
-                                                            </div>
-                                                        </td>
-                                                        <td className="py-4 px-4 text-center">
+                                                        </th>
+                                                        <th className="py-4 px-4 w-12 text-center">STT</th>
+                                                        <th className="py-4 px-4 w-40">Tên Prompt</th>
+                                                        <th className="py-4 px-4">Nội dung Prompt</th>
+                                                        <th className="py-4 px-4 w-32 text-center">
                                                             <button
-                                                                onClick={async (e) => {
-                                                                    e.stopPropagation();
-                                                                    const { error } = await supabase.from('prompts').update({ is_used: !p.is_used }).eq('id', p.id);
-                                                                    if (!error) {
-                                                                        setModalPrompts(prev => prev.map(item => item.id === p.id ? { ...item, is_used: !p.is_used } : item));
-                                                                    }
+                                                                onClick={() => {
+                                                                    setPromptSortStatus(prev => {
+                                                                        if (prev === 'default') return 'unused_first';
+                                                                        if (prev === 'unused_first') return 'used_first';
+                                                                        return 'default';
+                                                                    });
                                                                 }}
-                                                                className={`px-3 py-1 rounded-full text-[9px] font-bold uppercase transition-all tracking-tighter ${p.is_used
-                                                                    ? 'bg-accentEnd/20 text-accentEnd border border-accentEnd/30'
-                                                                    : 'bg-white/5 text-textSoft/50 border border-white/10 hover:border-white/20'
-                                                                    }`}
+                                                                className="flex items-center gap-1 mx-auto hover:text-accentEnd transition-colors group"
+                                                                title="Nhấn để sắp xếp theo trạng thái"
                                                             >
-                                                                {p.is_used ? 'Đã dùng' : 'Chưa dùng'}
+                                                                Trạng thái
+                                                                <span className={`text-[8px] transition-colors ${promptSortStatus !== 'default' ? 'text-accentEnd' : 'text-textSoft/30 group-hover:text-textSoft/60'}`}>
+                                                                    {promptSortStatus === 'unused_first' ? '▲' : promptSortStatus === 'used_first' ? '▼' : '◆'}
+                                                                </span>
                                                             </button>
-                                                        </td>
-                                                        <td className="py-4 px-4 text-center text-textSoft/40 italic">
-                                                            {new Date(p.created_at).toLocaleDateString('vi-VN')}
-                                                        </td>
-                                                        <td className="py-4 px-4">
-                                                            <div className="flex items-center justify-center gap-2">
+                                                        </th>
+                                                        <th className="py-4 px-4 w-32 text-center">Ngày tạo</th>
+                                                        <th className="py-4 px-4 w-28 text-center">Hành động</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {paginatedModalPrompts.map((p, pIdx) => (
+                                                        <tr key={p.id} className="border-b border-white/5 hover:bg-white/[0.02] transition-colors group">
+                                                            <td className="py-4 px-4 text-center">
                                                                 <button
                                                                     onClick={(e) => {
                                                                         e.stopPropagation();
-                                                                        navigator.clipboard.writeText(p.content);
-                                                                        addLog("Đã sao chép prompt", "success");
+                                                                        if (selectedModalPromptIds.includes(p.id)) {
+                                                                            setSelectedModalPromptIds(prev => prev.filter(uid => uid !== p.id));
+                                                                        } else {
+                                                                            setSelectedModalPromptIds(prev => [...prev, p.id]);
+                                                                        }
                                                                     }}
-                                                                    className="p-1.5 rounded-lg bg-white/5 hover:bg-accentEnd/20 hover:text-accentEnd text-textSoft transition-all"
-                                                                    title="Sao chép"
+                                                                    className="p-1 hover:text-white transition-colors"
                                                                 >
-                                                                    <Copy size={12} />
+                                                                    {selectedModalPromptIds.includes(p.id) ? <CheckSquare size={16} className="text-accentEnd" /> : <Square size={16} className="text-white/20" />}
                                                                 </button>
+                                                            </td>
+                                                            <td className="py-4 px-4 text-center text-textSoft/60">{sortedModalPrompts.length - (modalStartIndex + pIdx)}</td>
+                                                            <td className="py-4 px-4 text-white font-bold text-xs">{p.title || "---"}</td>
+                                                            <td className="py-4 px-4">
+                                                                <div className="text-white/80 line-clamp-2 leading-relaxed" title={p.content}>
+                                                                    {p.content}
+                                                                </div>
+                                                            </td>
+                                                            <td className="py-4 px-4 text-center">
                                                                 <button
                                                                     onClick={async (e) => {
                                                                         e.stopPropagation();
-                                                                        if (confirm('Xóa prompt này?')) {
-                                                                            const { error } = await supabase.from('prompts').delete().eq('id', p.id);
-                                                                            if (!error) {
-                                                                                const { data: ideaData } = await supabase.from('ideas').select('midjourney_prompt').eq('id', selectedIdeaForModal.id).single();
-                                                                                if (ideaData) {
-                                                                                    const filteredArray = (ideaData.midjourney_prompt || []).filter(id => id !== p.id);
-                                                                                    await supabase.from('ideas').update({ midjourney_prompt: filteredArray }).eq('id', selectedIdeaForModal.id);
-                                                                                }
-                                                                                setModalPrompts(prev => prev.filter(item => item.id !== p.id));
-                                                                                fetchIdeas();
-                                                                            }
+                                                                        const { error } = await supabase.from('prompts').update({ is_used: !p.is_used }).eq('id', p.id);
+                                                                        if (!error) {
+                                                                            setModalPrompts(prev => prev.map(item => item.id === p.id ? { ...item, is_used: !p.is_used } : item));
                                                                         }
                                                                     }}
-                                                                    className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-all"
-                                                                    title="Xóa"
+                                                                    title="Nhấn để đổi trạng thái"
+                                                                    className={`px-3 py-1 rounded-full text-[9px] font-bold uppercase transition-all tracking-wider ${p.is_used
+                                                                        ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25'
+                                                                        : 'bg-amber-500/10 text-amber-300/80 border border-amber-500/20 hover:border-amber-500/40 hover:text-amber-300'
+                                                                        }`}
                                                                 >
-                                                                    <Trash2 size={14} />
+                                                                    {p.is_used ? 'Đã chạy' : 'Chưa chạy'}
                                                                 </button>
-                                                            </div>
-                                                        </td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                )}
-                            </div>
+                                                            </td>
+                                                            <td className="py-4 px-4 text-center text-textSoft/40 italic">
+                                                                {new Date(p.created_at).toLocaleDateString('vi-VN')}
+                                                            </td>
+                                                            <td className="py-4 px-4">
+                                                                <div className="flex items-center justify-center gap-2">
+                                                                    <button
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            navigator.clipboard.writeText(p.content);
+                                                                            addLog("Đã sao chép prompt", "success");
+                                                                        }}
+                                                                        className="p-1.5 rounded-lg bg-white/5 hover:bg-accentEnd/20 hover:text-accentEnd text-textSoft transition-all"
+                                                                        title="Sao chép"
+                                                                    >
+                                                                        <Copy size={12} />
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={async (e) => {
+                                                                            e.stopPropagation();
+                                                                            if (confirm('Xóa prompt này?')) {
+                                                                                const { error } = await supabase.from('prompts').delete().eq('id', p.id);
+                                                                                if (!error) {
+                                                                                    const { data: ideaData } = await supabase.from('ideas').select('midjourney_prompt').eq('id', selectedIdeaForModal.id).single();
+                                                                                    if (ideaData) {
+                                                                                        const filteredArray = (ideaData.midjourney_prompt || []).filter(id => id !== p.id);
+                                                                                        await supabase.from('ideas').update({ midjourney_prompt: filteredArray }).eq('id', selectedIdeaForModal.id);
+                                                                                    }
+                                                                                    setModalPrompts(prev => prev.filter(item => item.id !== p.id));
+                                                                                    setSelectedModalPromptIds(prev => prev.filter(id => id !== p.id));
+                                                                                    fetchIdeas();
+                                                                                }
+                                                                            }
+                                                                        }}
+                                                                        className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-all"
+                                                                        title="Xóa"
+                                                                    >
+                                                                        <Trash2 size={14} />
+                                                                    </button>
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    )}
+                                </div>
 
-                            {/* Footer của Modal */}
-                            <div className="p-6 border-t border-white/5 bg-white/[0.02] flex justify-end">
-                                <button
-                                    onClick={() => {
-                                        setShowPromptsModal(false);
-                                        setSelectedModalPromptIds([]);
-                                    }}
-                                    className="px-6 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-white text-sm font-bold transition-all"
-                                >
-                                    Đóng
-                                </button>
+                                {/* Footer của Modal: Phân trang & Đóng */}
+                                <div className="px-6 py-4 border-t border-white/5 bg-white/[0.02] flex flex-wrap items-center justify-between gap-4 shrink-0">
+                                    {/* Left: Summary text */}
+                                    <div className="text-xs text-textSoft font-medium">
+                                        {sortedModalPrompts.length > 0 ? (
+                                            <>
+                                                Hiển thị <span className="text-white font-bold">{modalStartIndex + 1}</span> - <span className="text-white font-bold">{Math.min(modalEndIndex, sortedModalPrompts.length)}</span> trên tổng số <span className="text-accentEnd font-bold">{sortedModalPrompts.length}</span> prompt
+                                                {modalPrompts.length !== sortedModalPrompts.length && (
+                                                    <span className="text-textSoft/60 ml-1"> (tổng gốc {modalPrompts.length})</span>
+                                                )}
+                                            </>
+                                        ) : (
+                                            <span className="text-textSoft/60 italic">Không có dữ liệu</span>
+                                        )}
+                                    </div>
+
+                                    {/* Center: Pagination controls */}
+                                    {totalModalPromptPages > 1 && (
+                                        <div className="flex items-center gap-1.5">
+                                            <button
+                                                onClick={() => setModalPromptPage(prev => Math.max(1, prev - 1))}
+                                                disabled={safeModalPromptPage <= 1}
+                                                className={`p-1.5 rounded-lg bg-white/5 border border-white/10 text-textSoft hover:text-white transition-all ${safeModalPromptPage <= 1 ? 'opacity-30 cursor-not-allowed' : 'hover:bg-white/10'}`}
+                                                title="Trang trước"
+                                            >
+                                                <ChevronLeft size={16} />
+                                            </button>
+
+                                            <div className="flex items-center gap-1">
+                                                {(() => {
+                                                    let pages = [];
+                                                    for (let i = 1; i <= totalModalPromptPages; i++) {
+                                                        if (i === 1 || i === totalModalPromptPages || (i >= safeModalPromptPage - 1 && i <= safeModalPromptPage + 1)) {
+                                                            pages.push(i);
+                                                        } else if (i === safeModalPromptPage - 2 || i === safeModalPromptPage + 2) {
+                                                            pages.push("...");
+                                                        }
+                                                    }
+                                                    const uniquePages = [...new Set(pages)];
+                                                    return uniquePages.map((p, idx) => (
+                                                        p === "..." ? (
+                                                            <span key={`dots-${idx}`} className="px-2 text-textSoft/50 text-xs select-none">...</span>
+                                                        ) : (
+                                                            <button
+                                                                key={p}
+                                                                onClick={() => setModalPromptPage(p)}
+                                                                className={`min-w-[32px] h-8 px-2 rounded-lg flex items-center justify-center text-xs font-bold transition-all ${
+                                                                    safeModalPromptPage === p
+                                                                        ? 'bg-accentEnd text-white shadow-glow-sm'
+                                                                        : 'bg-white/5 text-textSoft hover:bg-white/10 hover:text-white border border-white/5'
+                                                                }`}
+                                                            >
+                                                                {p}
+                                                            </button>
+                                                        )
+                                                    ));
+                                                })()}
+                                            </div>
+
+                                            <button
+                                                onClick={() => setModalPromptPage(prev => Math.min(totalModalPromptPages, prev + 1))}
+                                                disabled={safeModalPromptPage >= totalModalPromptPages}
+                                                className={`p-1.5 rounded-lg bg-white/5 border border-white/10 text-textSoft hover:text-white transition-all ${safeModalPromptPage >= totalModalPromptPages ? 'opacity-30 cursor-not-allowed' : 'hover:bg-white/10'}`}
+                                                title="Trang sau"
+                                            >
+                                                <ChevronRight size={16} />
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {/* Right: Close button */}
+                                    <div className="flex items-center gap-3">
+                                        <button
+                                            onClick={() => {
+                                                setShowPromptsModal(false);
+                                                setSelectedModalPromptIds([]);
+                                                setModalPromptSearch("");
+                                            }}
+                                            className="px-6 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-white text-sm font-bold transition-all border border-white/10"
+                                        >
+                                            Đóng
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
-                    </div>
-                )
+                    );
+                })()
             }
         </div >
     );
